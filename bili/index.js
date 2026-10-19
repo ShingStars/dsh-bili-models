@@ -939,10 +939,11 @@ export function apply(ctx, config) {
     // DSH_HOST_MODULES 约定指向 ...\node_modules\@deepseek-ai；非 scoped 的包要用它的上一层
     const hm = process.env.DSH_HOST_MODULES
     if (hm) push(/[\\/]@deepseek-ai$/.test(hm) ? dirname(hm) : hm)
-    try {
-      const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
-      for (const p of readdirSync(join(dshHome, 'profiles'))) push(join(dshHome, 'profiles', p, 'node_modules'))
-    } catch { /* 没有 profiles 就算了 */ }
+    for (const home of [process.env.DSH_HOME, join(homedir(), '.dsh')]) {   // env 优先，真实家兜底
+      try {
+        for (const p of readdirSync(join(home, 'profiles'))) push(join(home, 'profiles', p, 'node_modules'))
+      } catch { /* 没有 profiles 就算了 */ }
+    }
     if (process.env.APPDATA) push(join(process.env.APPDATA, 'npm', 'node_modules'))
     for (const root of roots) {
       const pj = join(root, pkg, 'package.json')
