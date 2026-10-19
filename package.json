@@ -1,0 +1,70 @@
+{
+  "name": "dsh-bili-models",
+  "version": "2.0.0",
+  "description": "刷B站 + 可选模型：在 dsh-bili-scroll 的基础上加「这一轮用哪个模型」，可选 DSH 里任何已注册的模型（含其它插件提供的，如 Our Free Model）",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "bilibili",
+    "mcp",
+    "duty",
+    "model-select"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ShingStars/dsh-bili-models.git"
+  },
+  "homepage": "https://github.com/ShingStars/dsh-bili-models#readme",
+  "bugs": {
+    "url": "https://github.com/ShingStars/dsh-bili-models/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "./bili/index.js",
+  "exports": {
+    ".": "./bili/index.js",
+    "./client": "./bili/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bili",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "dsh": ">=0.1.7-rc.1",
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-plugins"
+      ]
+    }
+  }
+}

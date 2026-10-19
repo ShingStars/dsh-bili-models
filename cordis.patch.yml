@@ -1,0 +1,6 @@
+# dsh-bili-models 的 profile 补丁：往 profile 里插一条自己的 loader 条目。
+# id 就是设置页那一行的命名空间（bili 靠 CFG_SIG 认行，不依赖 id 字符串）。
+- insert:
+    - id: bili-models
+      name: dsh-bili-models
+      config: {}

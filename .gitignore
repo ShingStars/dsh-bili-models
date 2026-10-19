@@ -1,0 +1,8 @@
+node_modules/
+.venv/
+out/
+*.log
+.DS_Store
+bili/config.json
+bili/headless-overlay.yml
+tools/.cache/
