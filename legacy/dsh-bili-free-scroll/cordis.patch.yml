@@ -1,0 +1,16 @@
+# ============================================================================
+# dsh-bili-free-scroll —— DSH bundle patch（插件自带的挂载声明）
+# ============================================================================
+# 装上之后，profile 只要在 `dsh.profile.bundles` 里列出本包名即生效：
+#
+#   dsh plugin add dsh-bili-free-scroll
+#   （本地开发用：dsh plugin add link:<你自己的插件目录>）
+#
+# ⚠️ 只有一行 insert：一个包 = 一个 loader 条目 = 一个 client 半身。
+#    浏览器那一半由 package.json 的 `dsh.client` 声明，绑在 name 为裸包名的这行上。
+# ============================================================================
+
+- insert:
+    - id: bili-free-scroll
+      name: dsh-bili-free-scroll
+      config: {}

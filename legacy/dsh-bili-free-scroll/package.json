@@ -1,0 +1,86 @@
+{
+  "name": "dsh-bili-free-scroll",
+  "version": "1.0.1",
+  "description": "DSH 插件：每天替你刷一轮 B站（读字幕、写日报、@你），并自带四个免费模型渠道（LobsterAI / Qoder 中国版 / Cline / Raccoon）—— 登录一次，bili 的每一轮都能用这些模型跑。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "bilibili",
+    "mcp",
+    "duty",
+    "free-model",
+    "llm-provider"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ShingStars/dsh-bili-free-scroll.git"
+  },
+  "homepage": "https://github.com/ShingStars/dsh-bili-free-scroll#readme",
+  "bugs": {
+    "url": "https://github.com/ShingStars/dsh-bili-free-scroll/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./models/locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "client.bili.js",
+    "client.models.js",
+    "cordis.patch.yml",
+    "bili",
+    "models",
+    "README.md",
+    "README.en.md",
+    "CHANGELOG.md",
+    "NOTICE.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "dsh": ">=0.1.7-rc.1",
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-commands": "^0.1.2-rc.1 || ^0.1.7-rc.2 || ^0.2.0-rc.1",
+    "@deepseek-ai/dsh-credentials": "^0.1.2-rc.1 || ^0.1.7-rc.2 || ^0.2.0-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.1.2-rc.1 || ^0.1.7-rc.2 || ^0.2.0-rc.1",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-plugins"
+      ]
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

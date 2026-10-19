@@ -1,0 +1,14 @@
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.*
+*.local
+bili/out/
+bili/config.json
+models/settings.json
+tools/cdp-*.mjs
