@@ -25,6 +25,7 @@ const defineTool = hostDeps.defineTool
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
+import { homedir } from 'node:os'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { McpClient } from './lib/mcp.mjs'
@@ -922,14 +923,40 @@ export function apply(ctx, config) {
    * node_modules 里没有这些插件 ⇒ loader 解析不到（只 warn，表现成"模型没生效但也没人告诉你"）。
    * 给目录 URL 会 `ERR_UNSUPPORTED_DIR_IMPORT`，必须精确到入口 .js 文件。
    * 配了但没装的包**直接跳过**（不报错）—— 用户不一定装了 Our Free Model。
+   *
+   * ⭐ 2026-10-20（本机实证，`link:` 安装必踩）：Node 的 ESM **默认 realpath** ——
+   *    经 junction（`profiles/desktop/node_modules/dsh-bili-models` → `~/.dsh/plugins/dsh-bili-models`）
+   *    import 进来的模块，`import.meta.url` 是**真实路径**（.dsh\plugins\…），从这里向上
+   *    `require.resolve` 找不到 `profiles/desktop/node_modules` 里的 `dsh-our-free-model`
+   *    ⇒ 桥接被"没装就跳过"的规矩**静默吞掉** ⇒ 那一轮 `NO_ADAPTER: qodercn`，还没人告诉你 ✗。
+   *    ⇒ 解析失败后再扫一遍候选根（profile 树 / 全局 npm），两棵树里哪棵有就用哪棵 ✓。
    */
+  const bridgePkgJson = (pkg) => {
+    const req = createRequire(import.meta.url)
+    try { return req.resolve(`${pkg}/package.json`) } catch { /* 落到下面的候选根 */ }
+    const roots = []
+    const push = (p) => { if (p && !roots.includes(p)) roots.push(p) }
+    // DSH_HOST_MODULES 约定指向 ...\node_modules\@deepseek-ai；非 scoped 的包要用它的上一层
+    const hm = process.env.DSH_HOST_MODULES
+    if (hm) push(/[\\/]@deepseek-ai$/.test(hm) ? dirname(hm) : hm)
+    try {
+      const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
+      for (const p of readdirSync(join(dshHome, 'profiles'))) push(join(dshHome, 'profiles', p, 'node_modules'))
+    } catch { /* 没有 profiles 就算了 */ }
+    if (process.env.APPDATA) push(join(process.env.APPDATA, 'npm', 'node_modules'))
+    for (const root of roots) {
+      const pj = join(root, pkg, 'package.json')
+      if (existsSync(pj)) return pj
+    }
+    return ''
+  }
   const bridgePluginEntries = () => {
     const names = String(cfg.bridgePlugins || '').split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
     const out = []
-    const req = createRequire(import.meta.url)
     for (const pkg of names) {
       try {
-        const pj = req.resolve(`${pkg}/package.json`)
+        const pj = bridgePkgJson(pkg)
+        if (!pj) continue                                    // 没装 ⇒ 跳过（不报错）
         const meta = JSON.parse(readFileSync(pj, 'utf8'))
         const main = String(meta.main || meta.module || 'index.js').replace(/^\.\//, '')
         const entry = join(dirname(pj), main)

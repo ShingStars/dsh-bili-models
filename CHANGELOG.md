@@ -3,6 +3,15 @@
 
 # Changelog
 
+## 2.0.1 — 2026-10-20
+
+### Fixed
+
+- `link:` 安装（junction）下桥接插件解析失败：Node 的 ESM 默认 realpath，`import.meta.url` 是真实路径
+  （`~/.dsh/plugins/dsh-bili-models/…`），从这里 `createRequire(...).resolve('dsh-our-free-model/package.json')`
+  找不到 profile 树里的包 ⇒ 桥接被静默跳过、那一轮 `NO_ADAPTER`。
+  现在解析失败后按候选根（`DSH_HOST_MODULES` / `~/.dsh/profiles/*/node_modules` / 全局 npm）再扫一遍。
+
 ## 2.0.0 — 2026-10-20
 
 首个版本：在 [dsh-bili-scroll 0.1.11](https://github.com/c1overzz/dsh-bili-scroll) 基础上加「这一轮用哪个模型」。
