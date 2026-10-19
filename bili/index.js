@@ -22,9 +22,11 @@ import { loadHostDeps } from './lib/hostdeps.mjs'
 const hostDeps = await loadHostDeps()
 const z = hostDeps.z
 const defineTool = hostDeps.defineTool
+const createUserMessage = hostDeps.createUserMessage || null
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -97,6 +99,33 @@ export const Config = !z ? undefined : z.object({
   /** 提供方插件（逗号/空格分隔的包名）——那一轮跟本插件一起挂上。
    *  默认 dsh-our-free-model：装了它就能用它的免费模型；没装则自动跳过。 */
   bridgePlugins: z.string().default('dsh-our-free-model').extra('volatile', true),
+
+  /* ================================================================
+   * 2.1.0 新增（用户 2026-10-20 的五条要求）
+   * ================================================================ */
+
+  /** ⭐ 怎么跑那一轮：
+   *  · `in-host`（默认）= 在 DSH 宿主进程里、用**同一条固定会话**跑（每轮是那条会话里的一轮新对话）
+   *  · `headless`     = 老办法，起一个独立的 `dsh --profile headless` 子进程（那是一个**新会话**）
+   *  ⚠️ 选 headless 时，打开「上下文洞察」会把正在跑的那一轮当冷会话回写投影 ⇒ 那一轮被打断。
+   *     根因是"子进程的会话宿主看不见"，所以 in-host 才是正解。 */
+  runMode: z.string().default('in-host').extra('volatile', true),
+  /** 固定会话的 id；留空 = 首次运行时自动生成并记进状态文件 */
+  sessionId: z.string().default('').extra('volatile', true),
+  /** 宿主内执行的权限档位（read-only / workspace-write / danger-full-access） */
+  permissionPreset: z.string().default('workspace-write').extra('volatile', true),
+
+  /** ⭐ 私信发给**哪些人**（多个 UID，逗号/空格分隔）。旧的 dmUid 仍认 */
+  dmUids: z.string().default('').extra('volatile', true),
+  /** ⭐ 评论里 @ **哪些人**（多个 B站 昵称，逗号/空格分隔）。旧的 mentionName 仍认 */
+  mentionNames: z.string().default('').extra('volatile', true),
+
+  /** ⭐ 特别关注：这些 UP 主（UID 列表）发新视频时通知 */
+  watchUids: z.string().default('').extra('volatile', true),
+  /** 新视频通知方式：off=不通知 · dm=私信 · comment=去新视频下面评论 @ · both=两者都发 */
+  watchNotify: z.string().default('off').extra('volatile', true),
+  /** 多久查一次特别关注的新视频（分钟） */
+  watchEveryMin: z.natural().default(15).extra('volatile', true),
 })
 
 /**
@@ -208,6 +237,10 @@ export function apply(ctx, config) {
     dmMode: 'off', dmUid: 0,
     keywords: [], commentPerRound: 1, mentionName: '', pythonPath: 'python', dshBin: '', headlessProfile: 'headless', overlayMcp: true, workspace: '', reportLevel: 'full', replyToComments: false, replyPerRound: 1,
     modelProvider: '', modelName: '', modelEffort: '', bridgePlugins: 'dsh-our-free-model',
+    // 2.1.0
+    runMode: 'in-host', sessionId: '', permissionPreset: 'workspace-write',
+    dmUids: '', mentionNames: '',
+    watchUids: '', watchNotify: 'off', watchEveryMin: 15,
   }
   const normalize = (src, base) => {
     const out = { ...base }
@@ -241,7 +274,43 @@ export function apply(ctx, config) {
     if ('replyToComments' in p) p.replyToComments = Boolean(p.replyToComments)
     if ('replyPerRound' in p) p.replyPerRound = Math.max(1, Math.min(Number(p.replyPerRound) || 1, 10))
     if ('commentPerRound' in p) p.commentPerRound = Math.max(0, Math.min(Number(p.commentPerRound) || 0, 20))
+    // 2.1.0
+    if ('runMode' in p) p.runMode = String(p.runMode) === 'headless' ? 'headless' : 'in-host'
+    if ('permissionPreset' in p) p.permissionPreset = ['read-only', 'workspace-write', 'danger-full-access'].includes(String(p.permissionPreset)) ? String(p.permissionPreset) : 'workspace-write'
+    if ('watchNotify' in p) p.watchNotify = ['off', 'dm', 'comment', 'both'].includes(String(p.watchNotify)) ? String(p.watchNotify) : 'off'
+    if ('watchEveryMin' in p) p.watchEveryMin = Math.max(1, Math.min(Number(p.watchEveryMin) || 15, 1440))
+    if ('dmUids' in p) p.dmUids = String(p.dmUids || '').slice(0, 2000)
+    if ('mentionNames' in p) p.mentionNames = String(p.mentionNames || '').slice(0, 2000)
+    if ('watchUids' in p) p.watchUids = String(p.watchUids || '').slice(0, 2000)
     return p
+  }
+
+  /* ── 2.1.0：多人私信 / 多人 @ / 特别关注 的解析 ────────────────────────────────
+   * 为什么用**字符串列表**而不是数组：DSH 原生设置页把数组渲染成一堆输入框，用户改一个
+   * 就会整体重写；逗号分隔的字符串在原生页里就是一个普通输入框，最不容易出事。
+   * 旧的单值键（dmUid / mentionName）继续认，并**排在前面**（老用户零回归）。
+   */
+  const splitList = (s) => String(s || '').split(/[,，;；\s]+/).map((x) => x.trim()).filter(Boolean)
+  /** 私信收件人 UID 列表（去重、只留正整数） */
+  const dmTargets = (c = cfg) => {
+    const out = []
+    const legacy = Number(c.dmUid) || 0
+    if (legacy > 0) out.push(legacy)
+    for (const x of splitList(c.dmUids)) { const n = Number(x) || 0; if (n > 0 && !out.includes(n)) out.push(n) }
+    return out.slice(0, 20)
+  }
+  /** 评论里 @ 的昵称列表（去重） */
+  const mentionTargets = (c = cfg) => {
+    const out = []
+    if (String(c.mentionName || '').trim()) out.push(String(c.mentionName).trim())
+    for (const x of splitList(c.mentionNames)) if (!out.includes(x)) out.push(x)
+    return out.slice(0, 20)
+  }
+  /** 特别关注的 UP 主 UID 列表 */
+  const watchTargets = (c = cfg) => {
+    const out = []
+    for (const x of splitList(c.watchUids)) { const n = Number(x) || 0; if (n > 0 && !out.includes(n)) out.push(n) }
+    return out.slice(0, 50)
   }
 
   const hostCfg = () => normalize(config, { ...DEFAULTS })       // 宿主那份（schema 校验过、默认值已填）
@@ -580,7 +649,7 @@ export function apply(ctx, config) {
     description: '**立刻跑一轮**（不等窗口）：起一个 headless 会话，把 duty.md 交给它去刷、写报告。'
       + '适合"我现在就想看一份"的场合。',
     parameters: {},
-    async execute() { const r = runDuty('manual'); return { ok: true, ...r } },
+    async execute() { const r = await runDuty('manual'); return { ok: true, ...r } },
   })
 
   tool({
@@ -627,7 +696,10 @@ export function apply(ctx, config) {
     name: 'bili_config',
     description: '读 / 改「刷B站」的设置。不给 `patch` 就是读；给了就改（只认 schema 里的字段）。\n'
       + '例：`{"perDay":5,"peakValley":true,"noon":true,"night":true,"autoComment":false,"transcribe":false,"keywords":["DeepSeek Harness"]}`；'
-      + '私信投递：`{"dmMode":"only","dmUid":12345678}`（dmMode = off / only / both）。',
+      + '私信投递：`{"dmMode":"only","dmUid":12345678}`（dmMode = off / only / both）；'
+      + '多人：`{"dmUids":"123,456","mentionNames":"甲,乙"}`；'
+      + '特别关注：`{"watchUids":"123,456","watchNotify":"dm","watchEveryMin":15}`（watchNotify = off / dm / comment / both）；'
+      + '运行方式：`{"runMode":"in-host"}`（in-host = 宿主内同一条固定会话；headless = 起子进程）。',
     parameters: { patch: { type: 'object', additionalProperties: true, description: '要改的字段（可省）' } },
     async execute(args) {
       let host = null
@@ -681,6 +753,131 @@ export function apply(ctx, config) {
     const st = readJson(dutyStateFile, {})
     return st.day === dayKey(now) ? Number(st.count || 0) : 0
   }
+
+  /* ═══════════════ 2.1.0：特别关注的 UP 主（新视频 → 私信 / 评论 @） ═══════════════
+   * 为什么交给插件自己做、不交给模型：
+   *   ① 这是**确定性工作**（拉最新投稿 → 和上次比对 → 发通知），没有取舍；
+   *   ② 让 agent 每 15 分钟开一轮，既慢又费，还会跟"值班轮"抢当天额度；
+   *   ③ 直接在宿主进程里走插件自己的 MCP 通道（一条 JS 调用链），**不起会话**。
+   * 状态放在 `<家>/watch-state.json`：每个 UP 记 `last`（最后见到的时间戳）+ `bvids`（判重）。
+   * ⭐ 第一次见到某个 UP **只建基线、不补发历史** —— 否则用户一开开关就被灌 10 条旧视频 ✗。
+   */
+  const watchStateFile = join(stateDir, 'watch-state.json')
+  const WATCH_MAX_PER_UID = 3
+
+  const watchState = () => {
+    const st = readJson(watchStateFile, {}) || {}
+    return { seen: { ...(st.seen || {}) }, names: { ...(st.names || {}) }, at: Number(st.at) || 0 }
+  }
+
+  const upNameOf = async (uid, st) => {
+    const key = String(uid)
+    if (st.names[key]) return st.names[key]
+    try {
+      const info = await call('bili_user_info', { uid })
+      const name = String(info?.name || info?.card?.name || info?.data?.name || '').trim()
+      if (name) { st.names[key] = name; return name }
+    } catch { /* 查不到就用 UID 称呼，不影响通知 */ }
+    return `UID ${uid}`
+  }
+
+  const videoLink = (bvid) => `https://www.bilibili.com/video/${bvid}`
+
+  /** 按 watchNotify 发一条新视频通知；返回实际发到了谁 */
+  const notifyNewVideo = async (video, upName) => {
+    const mode = String(cfg.watchNotify || 'off')
+    const out = { dm: [], comment: [], errors: [] }
+    const line = `【特别关注】${upName} 发布了新视频：${video.title || '(无标题)'}\n${videoLink(video.bvid)}`
+    if (mode === 'dm' || mode === 'both') {
+      for (const uid of dmTargets()) {
+        try { await call('bili_send_message', { receiver_uid: uid, text: line }); out.dm.push(uid) }
+        catch (e) { out.errors.push(`私信 UID ${uid} 失败：${e?.message || e}`) }
+      }
+    }
+    if (mode === 'comment' || mode === 'both') {
+      const names = mentionTargets()
+      if (!names.length) out.errors.push('评论通知需要至少填一个 @ 昵称')
+      else {
+        const at = names.map((n) => `@${n}`).join(' ')
+        try {
+          await call('bili_reply', { bvid: video.bvid, text: `${at} 你特别关注的 UP 更新了：${String(video.title || '').slice(0, 60)} ${videoLink(video.bvid)}` })
+          out.comment.push(...names)
+        } catch (e) { out.errors.push(`评论 @ 失败：${e?.message || e}`) }
+      }
+    }
+    return out
+  }
+
+  let watchBusy = false
+  let watchLastAt = 0
+  /**
+   * 查一遍所有特别关注的 UP 主。
+   * @param {{force?:boolean, why?:string}} opts force=true 绕过 watchBusy 互斥
+   */
+  async function checkWatchedUploads({ force = false } = {}) {
+    refreshCfg()
+    const uids = watchTargets()
+    if (!uids.length) return { ok: true, uids: 0, newVideos: [], note: '没有特别关注的 UP 主（watchUids 为空）' }
+    if (watchBusy && !force) return { ok: true, busy: true, note: '上一次检查还没跑完' }
+    watchBusy = true
+    const st = watchState()
+    const summary = { ok: true, uids: uids.length, checked: [], newVideos: [], errors: [] }
+    try {
+      for (const uid of uids) {
+        const key = String(uid)
+        const prev = st.seen[key]
+        let videos = []
+        try {
+          const data = await call('bili_user_videos', { uid, pn: 1, ps: 10, order: 'pubdate' })
+          videos = Array.isArray(data?.videos) ? data.videos.filter((v) => v && v.bvid) : []
+        } catch (e) { summary.errors.push(`UID ${uid} 拉投稿失败：${e?.message || e}`); continue }
+        const upName = await upNameOf(uid, st)
+        const newest = videos.length ? Math.max(...videos.map((v) => Number(v.created) || 0)) : 0
+        if (!prev) {
+          // 首次：只建基线
+          st.seen[key] = { name: upName, last: newest, bvids: videos.slice(0, 60).map((v) => v.bvid), at: Date.now() }
+          summary.checked.push({ uid, name: upName, baseline: videos.length })
+          log(`特别关注：首次记录 ${upName}（UID ${uid}），基线 ${videos.length} 条，不补发历史`)
+          continue
+        }
+        const known = new Set(Array.isArray(prev.bvids) ? prev.bvids : [])
+        const fresh = videos
+          .filter((v) => !known.has(v.bvid) && (Number(v.created) || 0) > Number(prev.last || 0))
+          .sort((a, b) => (Number(a.created) || 0) - (Number(b.created) || 0))
+          .slice(0, WATCH_MAX_PER_UID)
+        for (const v of fresh) {
+          const r = await notifyNewVideo(v, upName)
+          summary.newVideos.push({ uid, name: upName, bvid: v.bvid, title: v.title, created: v.created, dm: r.dm, comment: r.comment })
+          if (r.errors.length) summary.errors.push(...r.errors)
+          const sent = [...r.dm.map((x) => `私信 ${x}`), ...(r.comment.length ? [`评论 @ ${r.comment.join('、')}`] : [])]
+          log(`特别关注：${upName} 新视频 ${v.bvid}（${String(v.title || '').slice(0, 40)}）→ ${sent.join(' · ') || '（未配置通知方式，只记录）'}`)
+        }
+        const merged = [...new Set([...videos.map((v) => v.bvid), ...known])].filter(Boolean).slice(0, 60)
+        st.seen[key] = { name: upName, last: Math.max(Number(prev.last) || 0, newest), bvids: merged, at: Date.now() }
+        summary.checked.push({ uid, name: upName, fresh: fresh.length })
+      }
+      st.at = Date.now()
+      writeJson(watchStateFile, st)
+      watchLastAt = st.at
+      return summary
+    } catch (e) {
+      summary.ok = false
+      summary.errors.push(String(e?.message || e))
+      return summary
+    } finally {
+      watchBusy = false
+      watchLastAt = watchLastAt || Date.now()
+    }
+  }
+
+  tool({
+    name: 'bili_watch_check',
+    description: '检查「特别关注」的 UP 主有没有发新视频（有就按设置私信 / 评论 @ 通知）。要不要我手动帮你查一下就能用这只。',
+    parameters: { force: { type: 'boolean', description: 'true（默认）= 立刻检查；false = 上次没跑完就等下一次' } },
+    async execute(args) {
+      return checkWatchedUploads({ force: args?.force !== false })
+    },
+  })
 
   // ⭐ 一键升级：由宿主自己跑 `dsh plugin --profile web add dsh-bili-scroll`
   //    ⚠️ 装完必须重启 dsh 才生效；⚠️ Windows 上"替换正在运行的插件"可能被文件占用挡住（我们踩过）
@@ -830,8 +1027,12 @@ export function apply(ctx, config) {
     const left = Math.max(0, quota - already)
     // ⭐ 投递方式（2026-10-17 加）：dmMode = off（只评论）· only（只私信）· both（都发）
     //    commentOn 是"这一轮到底能不能发公开评论"的唯一判据（工具层的闸用的是同一套逻辑）
-    const commentOn = Boolean(cfg.autoComment && cfg.mentionName && cfg.dmMode !== 'only')
-    const dmOn = Boolean(cfg.dmMode !== 'off' && Number(cfg.dmUid) > 0)
+    //    ⭐ 2.1.0：@ 与私信都改成**多人列表**（老的单值键仍然算在里面）
+    const mentions = mentionTargets()
+    const dms = dmTargets()
+    const watches = watchTargets()
+    const commentOn = Boolean(cfg.autoComment && mentions.length && cfg.dmMode !== 'only')
+    const dmOn = Boolean(cfg.dmMode !== 'off' && dms.length > 0)
     return `你是这个账号的 B站 助手。`
       + `下面是使用者的设定（如果有）—— **按它来**，别用你默认那套人格。`
       + ownerDoc
@@ -861,13 +1062,14 @@ export function apply(ctx, config) {
       + `⭐ 另外把这一轮**看过的每一条视频（挑中的和跳过的都算）**追加进归档：${join(digestDir, `${dayKey().slice(0, 7)}.md`)}`
       + ` —— 一行一条：日期 · BV 号 · 标题 · UP · 一句话结论 · 链接（跳过的那条在后面注明理由）；`
       + `这是**给以后检索用**的（报告是给人看的，归档是给"回头翻"用的），别省略、也别只写挑中的。`
-      + `自动评论并 @ ${cfg.mentionName || '（还没填要 @ 谁）'} 是${commentOn
-        ? `开着的（每轮最多 ${cfg.commentPerRound} 条评论，每条在正文里纯文本 @ ${cfg.mentionName}，150 字内）`
+      + `自动评论并 @ ${mentions.length ? mentions.join('、') : '（还没填要 @ 谁）'} 是${commentOn
+        ? `开着的（每轮最多 ${cfg.commentPerRound} 条评论，每条在正文里用纯文本 @ 上面这些昵称，@ 一次就够，150 字内）`
         : (cfg.dmMode === 'only'
           ? '关着的 —— 当前是「**只私信**」模式：**这一轮一条公开评论都不许发**，改走私信'
           : '关着的（只写报告，别发评论）')}。`
       + (dmOn
-        ? `⭐⭐ **私信投递**：用 bili_send_message 把这一轮的结果发到 UID **${Number(cfg.dmUid)}**。`
+        ? `⭐⭐ **私信投递**：用 bili_send_message 把这一轮的结果发给这些 UID：**${dms.join('、')}**`
+          + `（**每个收件人各发一条**，内容可以一样；人多了别漏、也别把给 A 的话只发给 B）。`
           + `内容**别照抄评论那套**：把本轮每条值得的写成 **标题 + 链接 + 一句话理由**`
           + `（私信是私人渠道、不占别人的地方，可以比评论长一点，但**别啰嗦**）。`
           + `🔴🔴 **但私信有长度上限 —— 实测 500 字符就顶了**：`
@@ -880,7 +1082,7 @@ export function apply(ctx, config) {
           + `（那是在跟使用者念操作手册，可读性极差）。他关心的只有：**这次挑了哪几条、为什么值得**。`
           + `（想交代"没别的了"就用一句人话，比如「今天没什么新的了」；`
           + `⚠️ **不要**把「无字幕跳过 N 条」这种统计口径搬进私信 —— 那是**报告**里写的，不是私信里写的。）`
-          + `⚠️ 私信里**不用 @ 任何人**；⚠️ **一轮只发一条私信**（多条合并成一条）；`
+          + `⚠️ 私信里**不用 @ 任何人**；⚠️ **每个收件人一条**（多条内容合并进同一条，别给同一个人连发好几条）；`
           + `⚠️ 私信里**不要**写"本鱼 / 本鲸 / 主人 / 人家"那套；⚠️ 发完把"已私信"记进报告（**报告里**可以写口径）。`
           + (cfg.dmMode === 'both' ? `⚠️ 现在是 **both**：公开评论照发（走下面那一整套规矩），私信**另外**再发一条。` : '')
         : '')
@@ -911,7 +1113,7 @@ export function apply(ctx, config) {
     // ⭐ 合并版补（原 0.1.9 的修复，上游 0.1.11 还没有）：
     //    投递方式和回评论各自要一只工具，漏了的话那一轮想发私信 / 想看谁回了你，
     //    手上根本没有对应工具，agent 只能绕过去直连接口。
-    if (cfg.dmMode && cfg.dmMode !== 'off') list.push('bili_send_message')
+    if ((cfg.dmMode && cfg.dmMode !== 'off') || dmTargets().length) list.push('bili_send_message')
     if (cfg.replyToComments) list.push('bili_received_replies')
     return list
   }
@@ -1100,7 +1302,7 @@ export function apply(ctx, config) {
     } catch (e) { log(`补占位报告失败：${e?.message ?? e}`) }
   }
 
-  const runDuty = (why = 'window') => {
+  const runDutyHeadless = (why = 'window') => {
    try {
     refreshCfg()          // ⭐ 设置页刚改过的值要立刻生效（config 是就地改的，快照会过期）
     const dsh = resolveDsh()
@@ -1178,6 +1380,147 @@ export function apply(ctx, config) {
    }
   }
 
+  /* ═══════════ 2.1.0：在宿主里跑那一轮（同一条固定会话，不新开会话） ═══════════
+   * 为什么要它（用户 2026-10-20 的第 4、5 条）：
+   *   老做法是 spawn 一个 `dsh --profile headless` 子进程 —— 那在宿主眼里是**另一个会话**：
+   *   一打开「上下文洞察」，dsh-context 就把正在跑的那个会话当**冷会话**读日志、补"中断轮次"
+   *   并把投影**回写** ⇒ 跟子进程正在进行的 turn 撞车 ⇒ 那一轮直接报错/退出、报告没写完 ✗
+   *   改成宿主内 agent 之后：这条会话对宿主是**活的**（`sessions.get(id)` 非空）⇒ 洞察走活投影、
+   *   backfill 直接跳过它 ✓；而且「每轮」只是同一条会话里的**新一轮对话**，不再新开会话 ✓。
+   */
+  const DUTY_SESSION_KEY = 'dutySessionId'
+  const dutySessionId = () => {
+    const fixed = String(cfg.sessionId || '').trim()
+    if (fixed) return fixed
+    const st = readJson(dutyStateFile, {})
+    if (st[DUTY_SESSION_KEY]) return String(st[DUTY_SESSION_KEY])
+    const id = `session-${randomUUID()}`
+    bumpState({ [DUTY_SESSION_KEY]: id })
+    return id
+  }
+
+  /** 拿宿主服务（拿不到就 undefined，绝不抛） */
+  const hostSvc = (name) => {
+    try { const v = ctx.reflect?.get?.(name); if (v !== undefined) return v } catch { /* 不注入就读不到 */ }
+    try { return ctx.get?.(name) } catch { return undefined }
+  }
+
+  /** 这一轮用哪个模型：设置里选了就听设置，否则跟宿主默认 */
+  const agentOptionsFor = () => {
+    const p = String(cfg.modelProvider || '').trim()
+    const m = String(cfg.modelName || '').trim()
+    const e = String(cfg.modelEffort || '').trim()
+    if (p && m) return { provider: p, model: m, ...(e ? { reasoningEffort: e } : {}) }
+    try {
+      const sel = hostSvc('agentDefaultModel')?.currentSelection?.()
+      if (sel?.provider && sel?.model) return { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}) }
+    } catch { /* 拿不到就让宿主自己填 */ }
+    return undefined
+  }
+
+  /** 组合：跟 GUI 新会话一样的 preset（拿不到就不挂 preset，按宿主默认组合跑） */
+  const composeDutyAgent = async () => {
+    const presets = hostSvc('agentPresets')
+    if (!presets) return {}
+    try {
+      const resolved = await presets.resolve(undefined)      // undefined = 当前默认 preset
+      const id = resolved?.id
+      if (!id) return {}
+      return { agentPreset: id, setup: async (agentCtx) => { await presets.mount(agentCtx, id) } }
+    } catch (e) {
+      log(`拿不到 agent preset（这一轮按宿主默认组合跑）：${e?.message ?? e}`)
+      return {}
+    }
+  }
+
+  const makeDutyMessage = (text, why) => {
+    const source = { kind: 'plugin', plugin: 'dsh-bili-models', task: 'bili-duty', why }
+    if (createUserMessage) {
+      try { return createUserMessage({ content: [{ type: 'text', text }], source }) } catch { /* 退到本地形状 */ }
+    }
+    return { id: randomUUID(), role: 'user', content: [{ type: 'text', text }], source }
+  }
+
+  const runDutyInHost = async (why = 'window') => {
+    refreshCfg()
+    const agents = hostSvc('agents')
+    if (!agents) {
+      const msg = '这一轮没跑：宿主里没有 agents 服务（插件不在宿主进程里？）'
+      log(msg)
+      try { stubReportIfMissing(1) } catch { /* 补不上也把话说清楚 */ }
+      return { started: false, why, mode: 'in-host', error: msg }
+    }
+    const sessionId = dutySessionId()
+    const text = promptFor()
+    const t0 = Date.now()
+    let agent = null
+    try {
+      agent = agents.get?.(sessionId) || null
+      if (!agent) {
+        const composition = await composeDutyAgent()
+        const opts = agentOptionsFor()
+        const setup = composition.setup
+        log(`刷B站开跑（${why}，宿主内会话 ${sessionId}${composition.agentPreset ? `，preset=${composition.agentPreset}` : ''}${opts ? `，模型=${opts.provider}/${opts.model}` : ''}）`)
+        // 先试「沿用这条持久化会话」，没有就新建一条（都是同一条会话 id，不会另开）
+        let handle = null
+        try {
+          handle = await agents.resume({ resumeSessionId: sessionId, ...(opts ? { agentOptions: opts } : {}), ...(setup ? { setup } : {}) })
+          log(`沿用已有会话 ${sessionId}`)
+        } catch (e) {
+          log(`没有可沿用的会话（${String(e?.message ?? e).slice(0, 140)}）⇒ 新建一条`)
+          handle = await agents.create({
+            sessionId,
+            ...(opts ? { agentOptions: opts } : {}),
+            meta: { cwd: stateDir, ...(composition.agentPreset ? { agentPreset: composition.agentPreset } : {}) },
+            ...(setup ? { setup } : {}),
+          })
+        }
+        agent = handle?.agent ?? handle
+      }
+      if (!agent) throw new Error('拿不到 agent 句柄')
+      // 无人值守：审批一律拒绝（官方 automation 也是这么钉的：presets.set + approval never）
+      try { agent.session?.append?.('approval/policy', { policy: 'never' }) } catch { /* 老版本会话没有 append 也无所谓 */ }
+      try { hostSvc('permissionPresets')?.set?.(agent.session, String(cfg.permissionPreset || 'workspace-write')) } catch { /* 拿不到就用宿主默认 */ }
+      agent.followup(makeDutyMessage(text, why))
+      const timeoutMs = 20 * 60_000
+      await Promise.race([
+        Promise.resolve(agent.whenIdle?.()).catch(() => {}),
+        new Promise((_, reject) => {
+          const t = setTimeout(() => reject(new Error(`超过 ${Math.round(timeoutMs / 60_000)} 分钟还没跑完`)), timeoutMs)
+          t.unref?.()
+        }),
+      ])
+      try { await hostSvc('sessions')?.flush?.(agent.session) } catch { /* 落盘失败不影响结论 */ }
+      const secs = Math.round((Date.now() - t0) / 1000)
+      log(`刷B站结束（${why}，宿主内，${secs}s）`)
+      stubReportIfMissing(0)
+      rotateLogIfBig()
+      try {
+        const st = readJson(dutyStateFile, {})
+        const prev = st.day === dayKey() ? Number(st.picked || 0) : 0
+        const picked = countPickedToday()
+        if (picked > prev) { bumpState({ picked }); log(`今天挑到 ${picked} 条（上限 ${Number(cfg.perDay) || 0} 条）`) }
+      } catch (e) { log(`数挑了几条时出错（不影响这一轮）：${e?.message ?? e}`) }
+      const verifyTimer = setTimeout(() => { Promise.resolve(runVerify('round')).catch((e) => log('复核异常：' + (e?.message ?? e))) }, 90_000)
+      verifyTimer.unref?.()
+      return { started: true, why, mode: 'in-host', sessionId, log: logFile }
+    } catch (e) {
+      log(`刷B站失败（${why}，宿主内）：${e?.stack ?? e}`)
+      try { stubReportIfMissing(1) } catch { /* 补不上也不影响日志 */ }
+      return { started: false, why, mode: 'in-host', sessionId, error: String(e?.message ?? e) }
+    }
+  }
+
+  /** 统一入口：按 runMode 分派（in-host 返回 Promise，调用点自己决定要不要等） */
+  const runDuty = (why = 'window') => {
+    refreshCfg()
+    if (String(cfg.runMode || 'in-host') === 'headless') return runDutyHeadless(why)
+    const p = runDutyInHost(why)
+    // 定时器那边不等结果 ⇒ 自己把异常兜住（未捕获的 rejection 在宿主里同样危险）
+    p.catch((e) => log(`刷B站（宿主内）异常：${e?.stack ?? e}`))
+    return p
+  }
+
   /* ─────────────── 谷时定时器 ───────────────
    * 🔴 2026-10-14 事故（使用者那边表现为"DSH 突然崩了、网页 Failed to fetch (gateway/internal)"）：
    *    第一版是 `setInterval(tick, 60_000)`，回调里抛的 TypeError **没人接**，直接把整个宿主进程带走
@@ -1201,7 +1544,8 @@ export function apply(ctx, config) {
         const key = `${today}:${k}`
         if (st.windows?.[key]) continue
         bumpState({ windows: { ...(st.windows || {}), [key]: true }, count: roundsToday(now) + 1, lastRunAt: now.toISOString(), lastWhy: k })
-        runDuty(`window:${k}`)
+        // ⭐ in-host 那条是异步的（要等整轮跑完），这里不等 —— 但必须自己兜住异常
+        Promise.resolve(runDuty(`window:${k}`)).catch((e) => log(`刷B站（定时器）异常：${e?.stack ?? e}`))
         return
       }
     } catch (e) {
@@ -1214,6 +1558,22 @@ export function apply(ctx, config) {
     timer.unref?.()                                    // 别因为这个定时器让进程不肯退出
     ctx.effect(() => () => clearInterval(timer), 'bili-duty: 谷时定时器')
   } catch (e) { log(`定时器没起来：${e?.message ?? e}`) }
+
+  /* ⭐ 2.1.0：特别关注的轮询（每 60 秒醒一次，真正查的间隔由 watchEveryMin 决定） */
+  try {
+    const watchTimer = setInterval(() => {
+      try {
+        refreshCfg()
+        if (!watchTargets().length) return
+        if (String(cfg.watchNotify || 'off') === 'off') return
+        const every = Math.max(1, Number(cfg.watchEveryMin) || 15) * 60_000
+        if (watchLastAt && Date.now() - watchLastAt < every) return
+        Promise.resolve(checkWatchedUploads({})).catch((e) => log(`特别关注检查出错（已兜住）：${e?.stack ?? e}`))
+      } catch (e) { log(`特别关注定时器这一跳出错（已兜住）：${e?.stack ?? e}`) }
+    }, 60_000)
+    watchTimer.unref?.()
+    ctx.effect(() => () => clearInterval(watchTimer), 'bili-duty: 特别关注定时器')
+  } catch (e) { log(`特别关注定时器没起来：${e?.message ?? e}`) }
 
   /* ─────────────── HTTP（设置页用） ─────────────── */
 
@@ -1545,6 +1905,17 @@ export function apply(ctx, config) {
       installTail: (() => { try { return readFileSync(installLogFile, 'utf8').slice(-1400) } catch { return '' } })(),
       report: join(outDir, `${today}.md`),
       log: logFile,
+      // ── 2.1.0：运行方式 / 多人投递 / 特别关注 ──
+      runMode: String(cfg.runMode || 'in-host'),
+      dutySessionId: (() => { try { return dutySessionId() } catch { return String(cfg.sessionId || '') } })(),
+      dmTargets: (() => { try { return dmTargets() } catch { return [] } })(),
+      mentionTargets: (() => { try { return mentionTargets() } catch { return [] } })(),
+      watch: (() => {
+        try {
+          const w = watchState()
+          return { uids: watchTargets(), notify: String(cfg.watchNotify || 'off'), everyMin: Number(cfg.watchEveryMin) || 15, lastCheckAt: w.at || 0, ups: Object.entries(w.seen).map(([uid, v]) => ({ uid: Number(uid), name: v?.name || '', last: v?.last || 0 })) }
+        } catch { return { uids: [], notify: 'off', everyMin: 15, lastCheckAt: 0, ups: [] } }
+      })(),
     }
   }
 
@@ -1598,7 +1969,10 @@ export function apply(ctx, config) {
       for (const k of ['perDay', 'peakValley', 'noon', 'night', 'autoComment', 'transcribe', 'asrModel',
         'commentPerRound', 'mentionName', 'dmMode', 'dmUid',
         'keywords', 'pythonPath', 'dshBin', 'headlessProfile', 'workspace', 'reportLevel', 'replyToComments', 'replyPerRound',
-        'modelProvider', 'modelName', 'modelEffort', 'bridgePlugins']) {
+        'modelProvider', 'modelName', 'modelEffort', 'bridgePlugins',
+        // 2.1.0
+        'runMode', 'sessionId', 'permissionPreset', 'dmUids', 'mentionNames',
+        'watchUids', 'watchNotify', 'watchEveryMin']) {
         if (k in body) patch[k] = body[k]
       }
       // ⭐ 范围钳制 + 两份都写（config.json / DSH 原生设置页），统一走 persistCfg —— 见文件上方
@@ -1611,7 +1985,30 @@ export function apply(ctx, config) {
     }
 
     if (req.method === 'POST' && path === '/api/bili-duty/run') {
-      return sendJson(res, 200, { ok: true, ...runDuty('manual') })
+      // ⭐ in-host 那一轮要跑几分钟 —— HTTP 不能一直挂着等，先把"开跑了"回给前端
+      const r = runDuty('manual')
+      if (r && typeof r.then === 'function') {
+        r.catch((e) => log(`刷B站（HTTP 触发）异常：${e?.stack ?? e}`))
+        return sendJson(res, 200, { ok: true, started: true, mode: 'in-host', pending: true })
+      }
+      return sendJson(res, 200, { ok: true, ...r })
+    }
+
+    // ⭐ 2.1.0：特别关注 —— 手动查一遍新视频（设置页那个"立刻检查"按钮）
+    if (req.method === 'POST' && path === '/api/bili-duty/watch/check') {
+      return sendJson(res, 200, await checkWatchedUploads({ force: true }))
+    }
+    if (req.method === 'GET' && path === '/api/bili-duty/watch') {
+      refreshCfg()
+      const st = watchState()
+      return sendJson(res, 200, {
+        ok: true,
+        uids: watchTargets(),
+        notify: cfg.watchNotify,
+        everyMin: Number(cfg.watchEveryMin) || 15,
+        lastCheckAt: st.at || 0,
+        ups: Object.entries(st.seen).map(([uid, v]) => ({ uid: Number(uid), name: v?.name || '', last: v?.last || 0, count: Array.isArray(v?.bvids) ? v.bvids.length : 0 })),
+      })
     }
 
     // 建 venv + 装依赖（**不等它**：几分钟的活，进度写 install.log）

@@ -3,6 +3,33 @@
 
 # Changelog
 
+## 2.1.0 — 2026-10-20
+
+五项更新（只改本插件，不动其它插件与 DSH 配置）。
+
+### Added
+
+- **宿主内运行（`runMode: in-host`，默认）**：跑一轮不再起 `dsh --profile headless` 子进程，而是用
+  `ctx.agents` 在 DSH 里驱动**同一条固定会话**（`sessionId`，留空自动生成并记住）。
+  每轮只是该会话里的新一轮对话 ⇒ 不新开会话。起跑前把审批钉成 `approval/policy: never`、
+  权限档位 `permissionPreset`（默认 `workspace-write`），20 分钟超时，跑完 `sessions.flush` 落盘。
+  `runMode: headless` 保留旧路径（子进程）。
+- **多人私信 / 多人 @**：`dmUids`、`mentionNames`（逗号/空格/分号分隔，各最多 20 个）；
+  私信改成**每个收件人各发一条**。旧的 `dmUid` / `mentionName` 仍然有效（会并进去）。
+- **特别关注 UP 主**：`watchUids`（最多 50）、`watchNotify`（`off` / `dm` / `comment` / `both`）、
+  `watchEveryMin`（默认 15）。后台每 60 秒醒一次、按间隔去问 `bili_user_videos`；
+  第一次见到某个 UP 只记基线不补发，之后只对**新出现的**视频通知（每个 UP 一次最多 3 条）。
+  - 新工具 `bili_watch_check`（`force` 可选）；新接口 `GET /api/bili-duty/watch`、`POST /api/bili-duty/watch/check`。
+- **设置页重排**：顶部状态栏吸顶（含运行方式徽章）；次要分区改成可折叠（`<details>`）；
+  新增「特别关注的 UP 主」区块与「怎么跑这一轮」（运行方式 + 固定会话）选项。
+
+### Fixed
+
+- **打开「上下文洞察」会中断正在跑的那一轮**（用户报的冲突）：
+  子进程跑的那一轮在宿主 `sessions` 表里不存在，dsh-context 的 backfill 会把它当**冷会话**读日志、
+  用 `interruptedTurnClosers` 补中断轮次并**回写投影**，与正在进行的 turn 撞车 ⇒ 那一轮报错、报告写不完。
+  改宿主内运行之后这条会话对宿主是活的，洞察走活投影、backfill 直接跳过它 ⇒ 机制上不再冲突。
+
 ## 2.0.1 — 2026-10-20
 
 ### Fixed

@@ -137,5 +137,17 @@ export async function loadHostDeps() {
   }
   defineTool = dtMod?.defineTool || ((options) => localDefineTool(options, log))
 
-  return { z, defineTool, notes }
+  // ③ dsh-llm 的 createUserMessage —— 2.1.0「宿主内固定会话」要用它造一条真正的用户消息
+  //    （消息带稳定 id、冻结；直接塞裸对象在有些路径上会被判"不是消息"）
+  //    拿不到就返回 null，index.js 那边退到本地等价形状 —— **绝不能因为它让插件不激活** ✗
+  let createUserMessage = null
+  let llmMod = await fromHostTree('dsh-llm', log)
+  if (!llmMod) {
+    try { llmMod = await import('@deepseek-ai/dsh-llm'); log('dsh-llm：宿主树里没有，用自己依赖里那份') }
+    catch { llmMod = null }
+  }
+  createUserMessage = llmMod?.createUserMessage ?? null
+  if (!createUserMessage) log('createUserMessage 拿不到 —— 宿主内那一轮用本地消息形状顶上')
+
+  return { z, defineTool, createUserMessage, notes }
 }

@@ -87,6 +87,17 @@ window.__ModuleLoader__.load({
 [data-bd-kv]{font-size:11px;line-height:18px;color:var(--dsw-alias-label-tertiary,#9aa0a6);word-break:break-all;}
 [data-bd-badge]{font-size:11px;padding:2px 7px;border-radius:6px;
   background:var(--dsw-alias-bg-overlay,rgba(128,128,128,.14));color:var(--dsw-alias-label-secondary,#c9ccd1);}
+/* ⭐ 2.1.0：设置页重排 —— 次要分区折叠（<details>），主分区保持展开 */
+details[data-bd-sec]{display:flex;flex-direction:column;gap:8px;
+  border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.08));border-radius:10px;padding:10px 12px;}
+details[data-bd-sec]>summary[data-bd-h]{list-style:none;cursor:pointer;display:flex;align-items:center;gap:6px;
+  user-select:none;outline:none;}
+details[data-bd-sec]>summary[data-bd-h]::-webkit-details-marker{display:none;}
+details[data-bd-sec]>summary[data-bd-h]::before{content:'▸';font-size:10px;opacity:.65;transition:transform .15s;}
+details[data-bd-sec][open]>summary[data-bd-h]::before{transform:rotate(90deg);}
+details[data-bd-sec]>summary[data-bd-h]:hover{color:var(--dsw-alias-label-secondary,#c9ccd1);}
+[data-bd-sticky]{position:sticky;top:0;z-index:2;padding:6px 0;background:var(--dsw-alias-bg-base,#1b1d21);}
+[data-bd-flag]{font-size:11px;padding:2px 6px;border-radius:6px;background:rgba(59,130,246,.16);color:#7cb0ff;}
 `
 
     // ⚠️ 与 lib/state.mjs 的 WINDOWS 保持一致（官方口径：工作日 9–12、14–18 是高峰，其余都是谷时）
@@ -162,6 +173,15 @@ window.__ModuleLoader__.load({
       const [mn, setMn] = React.useState(null)              // model 草稿
       const [me, setMe] = React.useState(null)              // reasoningEffort 草稿
       const [bp, setBp] = React.useState(null)              // bridgePlugins 草稿（包名，逗号分隔）
+      /* ⭐ 2.1.0：多人投递 / 特别关注 / 运行方式 */
+      const [dmUids, setDmUids] = React.useState(null)      // 私信收件人（可多人，逗号分隔）
+      const [mentionNames, setMentionNames] = React.useState(null)  // @ 谁（可多人）
+      const [watchUids, setWatchUids] = React.useState(null)        // 特别关注的 UP 主 UID
+      const [watchNotify, setWatchNotify] = React.useState(null)    // off / dm / comment / both
+      const [watchEvery, setWatchEvery] = React.useState(null)      // 每多少分钟查一次
+      const [watchInfo, setWatchInfo] = React.useState(null)        // GET /watch 的结果
+      const [runMode, setRunMode] = React.useState(null)            // in-host / headless
+      const [sessId, setSessId] = React.useState(null)              // 固定会话 id 草稿
       /* ⚠️ 扫码轮询的 timer 必须能停：切走设置页后还在跑的话会在已卸载的组件上 setState，
        *    重复点「扫码登录」还会叠出第二个 timer。（2026-10-16 审查修） */
       const loginTimer = React.useRef(null)
@@ -186,7 +206,20 @@ window.__ModuleLoader__.load({
         if (cfg && mn === null) setMn(cfg.modelName || '')
         if (cfg && me === null) setMe(cfg.modelEffort || '')
         if (cfg && bp === null) setBp(cfg.bridgePlugins || '')
+        if (cfg && dmUids === null) setDmUids(cfg.dmUids || '')
+        if (cfg && mentionNames === null) setMentionNames(cfg.mentionNames || '')
+        if (cfg && watchUids === null) setWatchUids(cfg.watchUids || '')
+        if (cfg && watchNotify === null) setWatchNotify(cfg.watchNotify || 'off')
+        if (cfg && watchEvery === null) setWatchEvery(String(cfg.watchEveryMin ?? 15))
+        if (cfg && runMode === null) setRunMode(cfg.runMode || 'in-host')
+        if (cfg && sessId === null) setSessId(cfg.sessionId || '')
       }, [cfg])
+
+      // ⭐ 特别关注的状态（有哪些 UP、上次查是什么时候）—— 进页面拉一次，检查完再拉
+      const loadWatch = React.useCallback(() => {
+        jget('/watch').then((r) => setWatchInfo(r || null)).catch(() => {})
+      }, [])
+      React.useEffect(() => { loadWatch() }, [])
 
       // ⭐ 模型清单只在进页面时拉一次（服务端有 30 秒缓存，别跟着轮询反复打）
       React.useEffect(() => {
@@ -363,6 +396,21 @@ window.__ModuleLoader__.load({
         await patch({ keywords: list, workspace: String(ws || '').trim() }, '关键词与工作区')
       }
 
+      // ⭐ 特别关注：立刻检查一遍（后台确实会自己轮询，这个按钮是"现在就要"）
+      const onWatchCheck = async () => {
+        setBusy('watch')
+        try {
+          const r = await jpost('/watch/check', {})
+          const n = (r?.newVideos || []).length
+          const errs = r?.errors || []
+          if (n) say(`查到 ${n} 条新视频，已按设置通知`, 'good')
+          else if (r?.ok) say('没有新视频（第一次添加的 UP 只记基线，不补发老视频）', 'good')
+          else say('检查没跑成：' + (errs[0] || r?.error || '未知原因'), 'warn')
+          if (errs.length) say(`有 ${errs.length} 处出错：${errs.slice(0, 2).join('；')}`, 'warn')
+          loadWatch()
+        } catch (e) { say(String(e?.message ?? e), 'warn') } finally { setBusy('') }
+      }
+
       if (!cfg) {
         return h('div', { 'data-bd-page': '' }, h('div', { 'data-bd-note': '' }, '读设置中…'))
       }
@@ -372,11 +420,12 @@ window.__ModuleLoader__.load({
       return h('div', { 'data-bd-page': '' },
 
         /* ── 今天 ── */
-        h('div', { 'data-bd-row': '' },
+        h('div', { 'data-bd-row': '', 'data-bd-sticky': '' },
           h('span', { 'data-bd-badge': '' }, `今天已挑 ${st.pickedToday ?? st.ranToday ?? 0} / ${cfg.perDay} 条`),
           h('span', { 'data-bd-badge': '' }, '环境' + (st.venvReady ? '已就绪' : (st.installing ? '正在装' : '未装'))),
           h('span', { 'data-bd-badge': '' }, st.loggedIn ? 'B站已登录' : 'B站未登录'),
             h('span', { 'data-bd-badge': '' }, 'v' + (st.version || '?')),
+          h('span', { 'data-bd-flag': '' }, (cfg.runMode === 'headless' ? '子进程模式' : '宿主内模式')),
           h('div', { 'data-bd-grow': '' }),
           h('button', { 'data-bd-btn': '', disabled: busy === 'run', onClick: onRun }, '现在跑一轮')),
           runNote ? h('div', { 'data-bd-msg': '', 'data-good': runNote.tone === 'good' ? '' : undefined,
@@ -407,7 +456,26 @@ window.__ModuleLoader__.load({
               note: `${win[k].start} – ${win[k].end}`,
               on: sw(k),
               onChange: (v) => patch({ [k]: v }, win[k].label),
-            }))) : null),
+            }))) : null,
+          h('div', { 'data-bd-label': '' }, '怎么跑这一轮'),
+          h('select', {
+            'data-bd-input': '', value: runMode ?? 'in-host',
+            onChange: (e) => { setRunMode(e.target.value); patch({ runMode: e.target.value }, '运行方式') },
+          },
+            h('option', { value: 'in-host' }, '宿主内 —— 同一条固定会话，不新开会话（推荐）'),
+            h('option', { value: 'headless' }, '起子进程 —— dsh --profile headless（老办法）')),
+          h('div', { 'data-bd-note': '' },
+            '宿主内 = 直接在 DSH 里用同一条会话跑这一轮；打开「上下文洞察」时也不会再把它当成"被中断的会话" ⇒ 不会打断。',
+            h('br'),
+            '子进程方式每次都是另一条会话，洞察面板会把正在跑的它当冷会话回写投影 ⇒ 那一轮会报错退出（老毛病）。'),
+          h('div', { 'data-bd-label': '' }, '固定会话 id（留空 = 自动生成一条并记住）'),
+          h('input', {
+            'data-bd-input': '', value: sessId ?? '',
+            placeholder: '留空最省事；填了就用你指定的那条会话',
+            onChange: (e) => setSessId(e.target.value),
+            onBlur: () => { const v = String(sessId || '').trim(); setSessId(v); patch({ sessionId: v }, '固定会话') },
+          }),
+          h('div', { 'data-bd-note': '' }, `这一轮会在会话：${st.dutySessionId || '（还没定）'}；权限档位 workspace-write、审批一律拒绝（无人值守）`)),
 
         /* ── 一轮挑几条 ── */
         h('div', { 'data-bd-sec': '' },
@@ -425,8 +493,8 @@ window.__ModuleLoader__.load({
           st.lastRunAt ? h('div', { 'data-bd-note': '' }, `上次跑：${new Date(st.lastRunAt).toLocaleString('zh-CN')}`) : null),
 
         /* ── 发言与转写 ── */
-        h('div', { 'data-bd-sec': '' },
-          h('div', { 'data-bd-h': '' }, '它会不会替你说话'),
+        h('details', { 'data-bd-sec': '' },
+          h('summary', { 'data-bd-h': '' }, '它会不会替你说话'),
           h(ToggleRow, {
             label: '回复评论（只回楼中楼）',
             note: '默认关；开了之后它只回「直接回复到你那条评论下面的人」，不参与讨论',
@@ -462,14 +530,19 @@ window.__ModuleLoader__.load({
                 // ⭐ 0 是合法值（= 这一轮不发评论）；范围与 index.js 的 clampPatch 一致（0–20）
                 onBlur: () => { const n = Math.max(0, Math.min(Number(perRound) || 0, 20)); setPerRound(String(n)); patch({ commentPerRound: n }, '每轮几条评论') },
               })),
-            h('div', { 'data-bd-label': '' }, '要 @ 谁（B站 昵称）'),
+            h('div', { 'data-bd-label': '' }, '要 @ 谁（可多人，用逗号隔开）'),
             h('input', {
-              'data-bd-input': '', value: mention ?? '',
-              placeholder: '填你要 @ 的那个人的 B站 昵称；留空 = 只写报告、不发评论',
-              onChange: (e) => setMention(e.target.value),
-              onBlur: () => { const v = String(mention || '').trim(); setMention(v); patch({ mentionName: v }, '要 @ 谁') },
+              'data-bd-input': '', value: mentionNames ?? '',
+              placeholder: '例如：小明,小红（B站 昵称）；留空 = 只写报告、不发评论',
+              onChange: (e) => setMentionNames(e.target.value),
+              onBlur: () => {
+                const v = String(mentionNames || '').trim()
+                const first = v.split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean)[0] || ''
+                setMentionNames(v); setMention(first)
+                patch({ mentionNames: v, mentionName: first }, '要 @ 谁')
+              },
             }),
-            h('div', { 'data-bd-note': '' }, '留空的话它就不发评论了 —— 因为评论存在的意义就是 @ 那一下')) : null,
+            h('div', { 'data-bd-note': '' }, '留空的话它就不发评论了 —— 因为评论存在的意义就是 @ 那一下；填多个人时，一条评论里把他们都 @ 上')) : null,
           h('div', { 'data-bd-label': '' }, '投递方式（评论 还是 私信）'),
           h('select', {
             'data-bd-input': '', value: dmMode ?? 'off',
@@ -479,14 +552,20 @@ window.__ModuleLoader__.load({
             h('option', { value: 'only' }, '只私信 —— 一条公开评论都不发，最不打扰别人'),
             h('option', { value: 'both' }, '评论 + 私信 —— 两边都发')),
           (dmMode && dmMode !== 'off') ? h('div', { 'data-bd-sub': '' },
-            h('div', { 'data-bd-label': '' }, '私信发给谁（B站 UID，数字）'),
+            h('div', { 'data-bd-label': '' }, '私信发给谁（B站 UID，可多个，逗号隔开）'),
             h('input', {
-              'data-bd-input': '', 'data-bd-num': '', type: 'number', min: 0, value: dmUid ?? '',
-              placeholder: '对方的数字 UID；比如你自己的另一个号',
-              onChange: (e) => setDmUid(e.target.value),
-              onBlur: () => { const n = Math.max(0, Number(dmUid) || 0); setDmUid(n ? String(n) : ''); patch({ dmUid: n }, '私信收件人') },
+              'data-bd-input': '', value: dmUids ?? '',
+              placeholder: '例如：1039568856, 3706946666367574（最多 20 个）',
+              onChange: (e) => setDmUids(e.target.value),
+              onBlur: () => {
+                const v = String(dmUids || '').trim()
+                const nums = v.split(/[,，;；\s]+/).map((s) => Number(s)).filter((n) => Number.isFinite(n) && n > 0)
+                const first = nums[0] || 0
+                setDmUids(v); setDmUid(first ? String(first) : '')
+                patch({ dmUids: v, dmUid: first }, '私信收件人')
+              },
             }),
-            h('div', { 'data-bd-note': '' }, '私信内容 = 本轮每条的「标题 + 链接 + 一句话」，一轮合并成一条发（不受 150 字限制）'),
+            h('div', { 'data-bd-note': '' }, '私信内容 = 本轮每条的「标题 + 链接 + 一句话」；每个收件人各发一条（不是一轮只发一条）'),
             h('div', { 'data-bd-note': '' }, '⚠️ 建议先让这个号和收件人互关：B站 对「陌生人私信」会限流，还可能不弹提醒')) : null,
           h(ToggleRow, {
             label: '本地转写没字幕的视频',
@@ -538,13 +617,56 @@ window.__ModuleLoader__.load({
             h('button', { 'data-bd-btn': '', 'data-primary': '', disabled: Boolean(busy), onClick: onSaveText }, '保存'),
             msg ? h('div', { 'data-bd-msg': '', 'data-good': msgTone === 'good' ? '' : undefined, 'data-warn': msgTone === 'warn' ? '' : undefined }, msg) : null)),
 
-        /* ── 用哪个模型干活 ── */
+        /* ── 特别关注（新视频通知） ── */
         h('div', { 'data-bd-sec': '' },
-          h('div', { 'data-bd-h': '' }, '用哪个模型干活'),
+          h('div', { 'data-bd-h': '' }, '特别关注的 UP 主'),
+          h('div', { 'data-bd-note': '' }, '他们一发新视频就通知你（私信 / @），不用等下一轮刷。留空 = 不盯人。'),
+          h('div', { 'data-bd-label': '' }, 'UP 主 UID（可多个，逗号隔开，最多 50 个）'),
+          h('input', {
+            'data-bd-input': '', value: watchUids ?? '',
+            placeholder: '例如：123456, 987654（数字 UID；在 UP 主空间地址里 /space.bilibili.com/<UID>）',
+            onChange: (e) => setWatchUids(e.target.value),
+            onBlur: () => { const v = String(watchUids || '').trim(); setWatchUids(v); patch({ watchUids: v }, '特别关注') },
+          }),
+          h('div', { 'data-bd-label': '' }, '有新视频时怎么通知'),
+          h('select', {
+            'data-bd-input': '', value: watchNotify ?? 'off',
+            onChange: (e) => { setWatchNotify(e.target.value); patch({ watchNotify: e.target.value }, '新视频通知') },
+          },
+            h('option', { value: 'off' }, '不通知（只记着他们）'),
+            h('option', { value: 'dm' }, '私信 —— 发给上面填的私信收件人'),
+            h('option', { value: 'comment' }, '评论 @ —— 在视频下面评论并 @ 上面填的人'),
+            h('option', { value: 'both' }, '私信 + 评论 @ 都来')),
+          h('div', { 'data-bd-row': '' },
+            h('div', { 'data-bd-grow': '' },
+              h('div', { 'data-bd-label': '' }, '多久查一次（分钟）'),
+              h('div', { 'data-bd-note': '' }, '60 秒醒一次看表；真正去问 B站 的间隔是这个数（1–1440）')),
+            h('input', {
+              'data-bd-input': '', 'data-bd-num': '', type: 'number', min: 1, max: 1440,
+              value: watchEvery ?? '',
+              onChange: (e) => setWatchEvery(e.target.value),
+              onBlur: () => { const n = Math.max(1, Math.min(Number(watchEvery) || 15, 1440)); setWatchEvery(String(n)); patch({ watchEveryMin: n }, '检查间隔') },
+            })),
+          h('div', { 'data-bd-row': '' },
+            h('button', { 'data-bd-btn': '', disabled: busy === 'watch' || !String(watchUids || '').trim(), onClick: onWatchCheck }, '立刻检查一遍'),
+            watchInfo?.lastCheckAt
+              ? h('div', { 'data-bd-note': '' }, `上次检查：${new Date(watchInfo.lastCheckAt).toLocaleString('zh-CN')}`)
+              : h('div', { 'data-bd-note': '' }, '还没查过')),
+          (watchInfo?.ups || []).length
+            ? h('div', { 'data-bd-sub': '' },
+                h('div', { 'data-bd-label': '' }, '已在盯的 UP 主'),
+                ...(watchInfo.ups || []).map((u) => h('div', { 'data-bd-note': '', key: String(u.uid) },
+                  `${u.name || '（名字待补）'} · UID ${u.uid}${u.last ? ` · 最新一条：${new Date(u.last * 1000).toLocaleDateString('zh-CN')}` : ''}`)))
+            : null,
+          h('div', { 'data-bd-note': '' }, '第一次添加某个 UP 时只记基线、不补发老视频；之后只对"真的更新了"的那几条发通知（每个 UP 一次最多 3 条）')),
+
+        /* ── 用哪个模型干活 ── */
+        h('details', { 'data-bd-sec': '' },
+          h('summary', { 'data-bd-h': '' }, '用哪个模型干活'),
           h('div', { 'data-bd-note': '' },
-            '跑一轮是另起一个 dsh 进程，它默认用 profile 里写死的模型 —— 没配 API key 会直接失败（no API key for provider route）。',
+            '这一轮用哪个模型：宿主内跑的时候按这里指定的来；留空 = 跟 DSH 当前的默认模型。',
             h('br'),
-            '这儿列的是当前 DSH 里真实注册的模型（含你自己配的，以及其它插件提供的，比如 Our Free Model）；选一个能跑通的。留空 = 用那个 profile 自己的默认。'),
+            '（子进程方式下它才需要写进 headless overlay；两种方式都会带上你选的模型。）'),
           (() => {
             const provs = models?.providers || []
             const any = provs.some((p) => (p.models || []).length)
@@ -610,8 +732,8 @@ window.__ModuleLoader__.load({
           mp && mn ? h('div', { 'data-bd-msg': '', 'data-good': '' }, `这一轮会用：${mp} / ${mn}${me ? ` · ${me}` : ''}`) : null),
 
         /* ── 环境与账号 ── */
-        h('div', { 'data-bd-sec': '' },
-          h('div', { 'data-bd-h': '' }, '环境与账号'),
+        h('details', { 'data-bd-sec': '' },
+          h('summary', { 'data-bd-h': '' }, '环境与账号'),
           h('div', { 'data-bd-row': '' },
             h('button', { 'data-bd-btn': '', disabled: busy === 'install', onClick: onInstall },
               st.venvReady ? '重装主依赖' : '装主依赖（建 venv）'),
@@ -634,8 +756,8 @@ window.__ModuleLoader__.load({
               '确认时选「记住我 / 长期」那张 —— 选 24 小时的话，明天就得重扫。')) : null),
 
         /* ── 它是怎么干活的（给他看的） ── */
-        h('div', { 'data-bd-sec': '' },
-          h('div', { 'data-bd-h': '' }, '它的地盘'),
+        h('details', { 'data-bd-sec': '' },
+          h('summary', { 'data-bd-h': '' }, '它的地盘'),
           h('div', { 'data-bd-kv': '' },
             `家目录：${st.home}`,
             h('br'),
