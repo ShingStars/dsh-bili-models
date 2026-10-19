@@ -593,7 +593,7 @@ export function apply(ctx, config) {
     },
     async execute(args) {
       // dmMode==='only' 时本轮根本不该发公开评论 —— 在工具层也一并挡掉（除非当场 force）
-      const commentOn = Boolean(cfg.autoComment && cfg.mentionName && cfg.dmMode !== 'only')
+      const commentOn = Boolean(cfg.autoComment && mentionTargets().length && cfg.dmMode !== 'only')
       if (!commentOn && !args.force) {
         return {
           ok: false,
@@ -609,6 +609,37 @@ export function apply(ctx, config) {
         rpid: Number(args.rpid) || 0,
       })
     },
+  })
+
+  tool({
+    name: 'bili_send_message',
+    description: '给某个 B站 用户发私信（B站 私信，不是评论）。正文 ≤ 500 字符（超了 B站 会报 code 21007）。'
+      + '多人投递时对每个收件人各调一次。',
+    parameters: {
+      receiver_uid: { type: 'number', description: '收件人的 B站 UID（数字）' },
+      text: { type: 'string', description: '私信正文（≤500 字符）' },
+    },
+    async execute(args) {
+      const uid = Number(args.receiver_uid) || 0
+      if (!uid) return { ok: false, error: 'receiver_uid 必须是数字 UID（对方空间地址里那串数字）' }
+      const text = String(args.text ?? '')
+      if (!text.trim()) return { ok: false, error: '私信正文不能为空' }
+      return call('bili_send_message', { receiver_uid: uid, text: text.slice(0, 500) })
+    },
+  })
+
+  tool({
+    name: 'bili_received_replies',
+    description: '看谁回复了你的评论（收到的回复 / @）。回复别人之前翻一眼，别漏人、也别答错楼。',
+    parameters: {},
+    async execute() { return call('bili_received_replies', {}) },
+  })
+
+  tool({
+    name: 'bili_video_info',
+    description: '看一个视频的元信息（标题 / UP / 播放 / 时长 / 简介）。',
+    parameters: { bvid: { type: 'string', description: 'BV号' } },
+    async execute(args) { return call('bili_video_info', { bvid: String(args.bvid ?? '') }) },
   })
 
   tool({
