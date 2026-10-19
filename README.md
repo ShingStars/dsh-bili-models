@@ -4,7 +4,16 @@
 
 上游那份插件跑一轮的方式是另起一个 `dsh` 子进程，用的是 profile 里写死的默认模型；没配 API key 就整个失败。这个 fork 在它的设置页里加了一段模型选择：**列的是当前 DSH 里真实注册的模型**，包括你自己配的、以及其它插件提供的（比如 [Our Free Model](https://github.com/Ebony-Vinyl/dsh-our-free-model)）。选哪个，跑一轮就用哪个。
 
+## 这个仓库里有什么
+
+| 目录 | 内容 |
+| --- | --- |
+| 根目录 | 主线：`dsh-bili-models`（就是本文档介绍的这份） |
+| `bili/` | 插件本体，基于上游 `dsh-bili-scroll` 0.1.11 |
+| `legacy/dsh-bili-free-scroll/` | 已废弃的 v1.x「两个插件合并成一个包」方案，只作历史参考，别装（原因见 [LEGACY.md](LEGACY.md)） |
+
 ---
+
 
 ## 装
 

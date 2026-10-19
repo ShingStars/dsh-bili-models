@@ -1,3 +1,6 @@
+- [Unreleased]
+  - 仓库合并：旧仓库 `dsh-bili-free-scroll`（v1.x 合并版）的源码并入 `legacy/`，旧仓库归档并指向这里。
+
 # Changelog
 
 ## 2.0.0 — 2026-10-20

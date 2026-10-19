@@ -4,6 +4,14 @@ Bilibili "duty scroll" ([dsh-bili-scroll](https://github.com/c1overzz/dsh-bili-s
 
 Upstream runs each round in a separate `dsh` child process and uses whatever default model the profile has hard-coded — if that provider has no API key, the whole round fails. This fork adds a model section to the settings page: it lists the models **actually registered in the running DSH**, including your own and those provided by other plugins (e.g. [Our Free Model](https://github.com/Ebony-Vinyl/dsh-our-free-model)). Whatever you pick is what that round uses.
 
+## What's in this repository
+
+| Path | Contents |
+| --- | --- |
+| root | The main line: `dsh-bili-models` (what this document describes) |
+| `bili/` | The plugin itself, based on upstream `dsh-bili-scroll` 0.1.11 |
+| `legacy/dsh-bili-free-scroll/` | The abandoned v1.x "merge both plugins into one package" attempt, kept for reference only — do not install (see [LEGACY.md](LEGACY.md)) |
+
 ---
 
 ## Install
