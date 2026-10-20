@@ -3,6 +3,28 @@
 
 # Changelog
 
+## 2.2.0 — 2026-10-20
+
+### Fixed
+
+- **`format v4 message requires a producer-owned source kind`**（用户报的运行时失败）：
+  宿主内那一轮喂给 `followup()` 的消息里，`source.kind` 写的是 `'plugin'`。
+  会话持久化的 v4 格式**明确禁止**这个值（`dsh-session-persistence-jsonl/lib/worker.cjs`：
+  `if (… || value.kind === "plugin") throw new SessionFormatError("format v4 message requires a producer-owned source kind")`），
+  `assertV4MessageSources` 对每条 durable message 都会校验 ⇒ 那一轮直接失败、报告写不完。
+  改成自有的 producer kind **`'bili-duty'`**（v4 只要求「非空字符串且 ≠ `plugin`」，没有白名单；
+  `dsh-agent/README.md` 的示例就是 `source: { kind: 'my-plugin' }`）。
+- 起跑顺序对齐官方 automation：`create` → 等 `agent.whenIdle()`（最多 60 秒）→ 再 `followup()`，
+  避免会话还没装配完就塞消息。
+
+### Changed
+
+- **设置页 UI 整体重做**（不沿用旧样式）：顶部改成**胶囊分页**，一次只渲染一屏 ——
+  概览 / 定时 / 发言 / 关注 / 模型 / 环境；概览是一张 hero 卡（大数字 + 配额进度条 + 状态胶囊 + 一键跑一轮）。
+  字段统一成「左标签 · 右控件」的栅格；细则只在开关打开时才出现。
+  配色全部改走 DSH 自己的设计变量（`--dsw-alias-*` / `--dsw-radius-*`），深浅色主题跟着宿主走；
+  新增「权限档位」下拉。
+
 ## 2.1.0 — 2026-10-20
 
 五项更新（只改本插件，不动其它插件与 DSH 配置）。

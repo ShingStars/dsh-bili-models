@@ -677,8 +677,8 @@ export function apply(ctx, config) {
 
   tool({
     name: 'bili_run',
-    description: '**立刻跑一轮**（不等窗口）：起一个 headless 会话，把 duty.md 交给它去刷、写报告。'
-      + '适合"我现在就想看一份"的场合。',
+    description: '**立刻跑一轮**（不等窗口）：默认在宿主内那条固定会话上跑（不新开会话、不再起子进程），'
+      + 'runMode=headless 时才起一次性子进程。把 duty.md 交给它去刷、写报告，适合"我现在就想看一份"的场合。',
     parameters: {},
     async execute() { const r = await runDuty('manual'); return { ok: true, ...r } },
   })
@@ -1465,7 +1465,12 @@ export function apply(ctx, config) {
   }
 
   const makeDutyMessage = (text, why) => {
-    const source = { kind: 'plugin', plugin: 'dsh-bili-models', task: 'bili-duty', why }
+    // ⚠️ v4 会话格式（2026-10 起）：durable message 的 source.kind 必须是「生产者自己的 kind」，
+    //    kind === 'plugin' 已被明确拒绝（dsh-session-persistence-jsonl worker.cjs 的
+    //    `format v4 message requires a producer-owned source kind`）。官方 dsh-agent README
+    //    的示例就是 `source: { kind: 'my-plugin' }` ⇒ 这里用自己的 kind 'bili-duty'，
+    //    不再带已被淘汰的 `plugin` 字段。
+    const source = { kind: 'bili-duty', why }
     if (createUserMessage) {
       try { return createUserMessage({ content: [{ type: 'text', text }], source }) } catch { /* 退到本地形状 */ }
     }
@@ -1512,19 +1517,155 @@ export function apply(ctx, config) {
       // 无人值守：审批一律拒绝（官方 automation 也是这么钉的：presets.set + approval never）
       try { agent.session?.append?.('approval/policy', { policy: 'never' }) } catch { /* 老版本会话没有 append 也无所谓 */ }
       try { hostSvc('permissionPresets')?.set?.(agent.session, String(cfg.permissionPreset || 'workspace-write')) } catch { /* 拿不到就用宿主默认 */ }
-      agent.followup(makeDutyMessage(text, why))
-      const timeoutMs = 20 * 60_000
+      // 先等它停稳再投喂（官方 automation 也是 create 之后先 await whenIdle 再 followup）：
+      // 刚 create/resume 出来的 agent 还在装配，这时直接 followup 有竞态。
       await Promise.race([
         Promise.resolve(agent.whenIdle?.()).catch(() => {}),
-        new Promise((_, reject) => {
-          const t = setTimeout(() => reject(new Error(`超过 ${Math.round(timeoutMs / 60_000)} 分钟还没跑完`)), timeoutMs)
-          t.unref?.()
-        }),
+        new Promise((resolve) => { const t = setTimeout(resolve, 60_000); t.unref?.() }),
       ])
-      try { await hostSvc('sessions')?.flush?.(agent.session) } catch { /* 落盘失败不影响结论 */ }
+      const timeoutMs = 20 * 60_000
+      /* ⭐ 2026-10-20 真机事故（踩了两版，教训都写在这）：
+       *   ① 直接 `await whenIdle()` 会在刚 followup、驱动器还没把这一轮置为活动时**立刻 resolve**
+       *      （dsh-agent 的 practices.md 原话：「whenIdle() does not mean one follow-up finished:
+       *      several inputs can share one running interval」）⇒ 日志「刷B站结束（…，宿主内，0s）」，
+       *      会话里一个事件都没多、报告空白，而后台其实还在跑。
+       *   ② 改成「等 session.seq 前进」也不够：followup 自己就会同步落一条 `agent/inbox/spliced`
+       *      把序号顶上去 ⇒ 「开跑了」立刻成立，紧接着的 whenIdle 照样秒回 ⇒ 仍然 0s。
+       *   ⇒ 照官方 automation 的做法**看事件**：先看到我们这条消息之后的 `turn/start`，
+       *      再等它的 `turn/end`，才算这一轮真的跑完（turn/start 与 turn/end 在 dsh-agent-loop
+       *      的 turn() 里一定成对落盘）。
+       */
+      const fromSeq = Number(agent.session?.seq ?? 0)
+      let sawTurnStart = false
+      let sawRunning = false
+      let turnEndReason = ''
+      let off = null
+      let timer = null
+      let poll = null
+      const stopWatch = () => {
+        try { off?.() } catch { /* 事件总线没给 disposer 也无妨 */ }
+        off = null
+        try { clearTimeout(timer) } catch { /* 已经清过 */ }
+        try { clearInterval(poll) } catch { /* 已经清过 */ }
+        poll = null
+      }
+      const turnEnded = new Promise((resolve, reject) => {
+        timer = setTimeout(() => {
+          stopWatch()
+          reject(new Error(`超过 ${Math.round(timeoutMs / 60_000)} 分钟还没跑完`))
+        }, timeoutMs)
+        timer.unref?.()
+        // 起跑兜底：90 秒内既没 turn/start 也没见过 running，就判定这条消息没被接纳，
+        // 别白等 20 分钟（真机事故里就是"什么也没发生"，日志只留一句 0s）。
+        const bootTimer = setTimeout(() => {
+          if (sawTurnStart || sawRunning) return
+          // 起不来时把「这条会话到底落了哪些事件」记下来 —— 下次再出 0s 事故，
+          // 一眼就能分清是「消息没进收件箱」还是「进了但驱动器没醒」。
+          let types = ''
+          try {
+            const evs = agent.session?.snapshotEvents?.(fromSeq) || []
+            types = evs.map((e) => String(e?.type ?? '?')).join(',')
+          } catch { types = '(读不到)' }
+          log(`90 秒了还没有起跑迹象；这条会话自 #${fromSeq} 起的事件：${types || '(空)'}；agent 状态=${String(agent.status ?? '未知')}`)
+          stopWatch()
+          reject(new Error('90 秒内这一轮没有任何起跑迹象（没有 turn/start，也没有 running）'))
+        }, 90_000)
+        bootTimer.unref?.()
+        const done = (why) => {
+          try { clearTimeout(bootTimer) } catch { /* 忽略 */ }
+          stopWatch()
+          resolve(why)
+        }
+        const listener = (session, event) => {
+          if (session !== agent.session) return
+          if (!(Number(event?.seq) >= fromSeq)) return
+          if (event?.type === 'turn/start') {
+            sawTurnStart = true
+            try { clearTimeout(bootTimer) } catch { /* 忽略 */ }
+            return
+          }
+          if (event?.type === 'turn/end' && sawTurnStart) {
+            // 官方 automation 也是从 turn/end 的 reason 判成败（completed / error / aborted / blocked）
+            turnEndReason = String(event?.data?.reason?.kind ?? event?.data?.reason ?? '')
+            done('turn-end')
+          }
+        }
+        // `{ global: true }` 不能省：session/event 是从会话自己的 scope 上派发的
+        // （dsh-session 的 store 用 scopeTarget(session, scopeOf(ctx)) 做 filter，只放行
+        //  「没带 scope 标签」的监听器或祖先 scope 的监听器）。插件 ctx 一旦带上别的 scope 标签
+        // 就会被静默过滤掉 ⇒ 永远等不到 turn/start，白等 20 分钟。官方 api-session-controller
+        // 的同一个监听也带 { global: true }。
+        try { off = ctx.on?.('session/event', listener, { global: true }) ?? null } catch { off = null }
+        // 第二/第三道保险（都不依赖事件总线）：万一上面那条监听被 scope 过滤掉（那是静默失效，
+        // 不会报错），这两条也能把我们从 20 分钟里捞出来：
+        //   ② agent.status 从 running 落回 idle 也算这一轮结束；
+        //   ③ 直接读会话日志找 turn/start / turn/end —— 事件总线会被 scope 过滤，会话日志不会：
+        //      turn/start 与 turn/end 在 dsh-agent-loop 的 turn() 里一定成对落盘。
+        //      用 eventAt(seq) 按游标增量扫，避免每 2 秒重扫整段日志（长会话会有几千条）。
+        let scanFrom = fromSeq
+        poll = setInterval(() => {
+          try {
+            const s = String(agent.status ?? '')
+            if (s === 'running') sawRunning = true
+            const end = Number(agent.session?.seq ?? 0)
+            for (let i = scanFrom; i < end; i++) {
+              const e = agent.session?.eventAt?.(i)
+              const t = String(e?.type ?? '')
+              if (t === 'turn/start') { sawTurnStart = true; try { clearTimeout(bootTimer) } catch { /* 忽略 */ } }
+              else if (t === 'turn/end' && sawTurnStart) {
+                turnEndReason = String(e?.data?.reason?.kind ?? e?.data?.reason ?? '')
+                scanFrom = i + 1
+                stopWatch()
+                resolve('turn-end-poll')
+                return
+              }
+            }
+            scanFrom = end
+            if (sawRunning && s !== 'running') { stopWatch(); resolve('idle-poll') }
+          } catch { /* status / 日志都读不到就只靠事件 */ }
+        }, 2_000)
+        poll.unref?.()
+        if (!off && !poll) {             // 两条路都没有：只能退回 whenIdle
+          try { clearTimeout(timer) } catch { /* 忽略 */ }
+          resolve('no-bus')
+        }
+      })
+      agent.followup(makeDutyMessage(text, why))
+      // 投喂后立刻记一行现场（下次再出 0s 事故，这一行就能分清是"消息没进去"还是"进去了没跑"）
+      try { log(`已投喂（会话序号 ${fromSeq} → ${Number(agent.session?.seq ?? 0)}，agent 状态=${String(agent.status ?? '未知')}，sessions 服务=${hostSvc('sessions') ? '有' : '拿不到'}）`) } catch { /* 记不上不影响跑 */ }
+      const outcome = await turnEnded
+      if (outcome === 'no-bus') {
+        log('事件总线与 status 轮询都拿不到 ⇒ 这一轮只能退回等 whenIdle（有可能提前返回）')
+        await Promise.race([
+          Promise.resolve(agent.whenIdle?.()).catch(() => {}),
+          new Promise((_, reject) => {
+            const t = setTimeout(() => reject(new Error(`超过 ${Math.round(timeoutMs / 60_000)} 分钟还没跑完`)), timeoutMs)
+            t.unref?.()
+          }),
+        ])
+      } else if (!sawTurnStart) {
+        log(`这一轮没看到 turn/start（判据=${outcome}）—— 消息可能没被驱动器接纳，或事件被范围过滤了`)
+      }
+      if (turnEndReason) log(`这一轮结束原因：${turnEndReason}`)
+      // ⭐ flush 的失败**必须记下来**：2026-10-20 那次「format v4 message requires a
+      //    producer-owned source kind」就是在这里被 `catch {}` 吞掉的 —— 会话落盘被拒，
+      //    但日志只留一句「结束（0s）」，用户看到的是另一处的报错，两头对不上。
+      let flushErr = null
+      try {
+        const sessionsSvc = hostSvc('sessions')
+        if (sessionsSvc?.flush) {
+          const acked = await sessionsSvc.flush(agent.session)
+          if (acked === false) flushErr = '会话服务没有确认落盘（flush 返回 false）'
+        }
+      } catch (e) {
+        flushErr = String(e?.message ?? e)
+        log(`会话落盘失败：${flushErr}`)
+      }
       const secs = Math.round((Date.now() - t0) / 1000)
-      log(`刷B站结束（${why}，宿主内，${secs}s）`)
-      stubReportIfMissing(0)
+      // 结束原因不是 completed（error/aborted/blocked）也算这一轮没跑成
+      const bad = (turnEndReason && turnEndReason !== 'completed') || flushErr
+      log(`刷B站结束（${why}，宿主内，${secs}s${bad ? '，未跑成' : ''}）`)
+      stubReportIfMissing(bad ? 1 : 0)
       rotateLogIfBig()
       try {
         const st = readJson(dutyStateFile, {})
