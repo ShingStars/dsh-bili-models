@@ -6,3 +6,5 @@ out/
 bili/config.json
 bili/headless-overlay.yml
 tools/.cache/
+__pycache__/
+*.pyc
