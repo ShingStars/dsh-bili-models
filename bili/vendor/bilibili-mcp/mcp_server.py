@@ -1410,6 +1410,148 @@ async def bili_received_at_and_likes() -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
+# ========== Tool 25/26/27: 对话（评论回复 / 私信会话） ==========
+# ⭐ 2.3.0：插件要能「聊起来」，就得能**读**对话，而不只是发。
+#    · bili_comment_replies：把「谁回复了你那条评论」整理成能直接回的形状（bvid + rpid + root）
+#    · bili_dm_sessions：私信会话列表（谁找过你、有没有未读）
+#    · bili_dm_history：跟某个人的私信往来（最近 N 条，带方向）
+#    ⚠️ 这三只都只读，不发任何东西；发不发由插件那边的闸决定。
+
+import re as _re
+
+_BV_RE = _re.compile(r"(BV[0-9A-Za-z]{10})")
+
+
+def _my_uid(cred) -> int:
+    try:
+        return int(getattr(cred, "dedeuserid", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _msg_text(raw) -> str:
+    """私信 content 是 JSON 字符串（{"content": "..."}），系统通知是另一种形状 —— 都能兜住。"""
+    s = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False)
+    try:
+        j = json.loads(s)
+        if isinstance(j, dict):
+            for k in ("content", "text", "title"):
+                v = j.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+    except Exception:
+        pass
+    return str(s)[:800]
+
+
+@tool()
+async def bili_comment_replies(max_items: int = 20) -> str:
+    """
+    看谁回复了你的评论 —— 整理成可以直接回的形状。
+
+    Args:
+        max_items: 最多返回几条
+
+    Returns:
+        {"count": n, "replies": [{bvid, rpid, root, parent, uid, nick, text, ts}]}
+    """
+    cred = get_cred()
+    try:
+        raw = await session.get_replies(credential=cred)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    items = (raw or {}).get("items") or []
+    out = []
+    for it in items[: max(1, int(max_items or 20))]:
+        item = it.get("item") or {}
+        rep = it.get("reply") or {}
+        user = it.get("user") or {}
+        uri = str(item.get("uri") or "")
+        m = _BV_RE.search(uri) or _BV_RE.search(json.dumps(it, ensure_ascii=False))
+        content = rep.get("content")
+        text = content.get("message") if isinstance(content, dict) else content
+        out.append({
+            "bvid": m.group(1) if m else "",
+            "rpid": rep.get("id") or item.get("target_id") or 0,
+            "root": rep.get("root_id") or item.get("root_id") or 0,
+            "parent": rep.get("parent_id") or rep.get("id") or 0,
+            "uid": user.get("mid") or 0,
+            "nick": user.get("nickname") or "",
+            "text": str(text or "").strip()[:500],
+            "ts": rep.get("ctime") or item.get("ctime") or 0,
+        })
+    return json.dumps({"count": len(out), "replies": out}, ensure_ascii=False)
+
+
+@tool()
+async def bili_dm_sessions(max_items: int = 10) -> str:
+    """
+    看私信会话列表：谁给你发过消息、有没有未读。
+
+    Args:
+        max_items: 最多返回几个会话
+
+    Returns:
+        {"count": n, "sessions": [{talker_id, unread, from_me, text, ts, system}]}
+    """
+    cred = get_cred()
+    try:
+        raw = await session.get_sessions(credential=cred, session_type=1)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    lst = (raw or {}).get("session_list") or []
+    me = _my_uid(cred)
+    out = []
+    for s in lst[: max(1, int(max_items or 10))]:
+        talker = s.get("talker_id") or 0
+        if not talker:
+            continue
+        last = s.get("last_msg") or {}
+        # 系统通知（账号登录提醒之类）不是人，别让模型去「回」
+        system = bool(s.get("system_msg_type") or (last.get("msg_type") not in (1, None)))
+        out.append({
+            "talker_id": talker,
+            "unread": int(s.get("unread_count") or 0),
+            "from_me": bool(me and last.get("sender_uid") == me),
+            "text": _msg_text(last.get("content"))[:300],
+            "ts": last.get("timestamp") or 0,
+            "system": system,
+        })
+    return json.dumps({"count": len(out), "sessions": out}, ensure_ascii=False)
+
+
+@tool()
+async def bili_dm_history(talker_id: int, limit: int = 20) -> str:
+    """
+    读跟某个人的私信往来（最近 N 条，按时间正序）。
+
+    Args:
+        talker_id: 对方的 UID
+        limit: 最多返回多少条
+
+    Returns:
+        {"talker_id": uid, "count": n, "messages": [{from_me, text, ts}]}
+    """
+    cred = get_cred()
+    try:
+        raw = await session.fetch_session_msgs(talker_id=int(talker_id), credential=cred)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    data = (raw or {}).get("data") or {}
+    msgs = data.get("messages") or []
+    me = _my_uid(cred)
+    rows = []
+    for m in msgs:
+        rows.append({
+            "from_me": bool(me and m.get("sender_uid") == me),
+            "text": _msg_text(m.get("content")),
+            "ts": m.get("timestamp") or 0,
+        })
+    rows.sort(key=lambda r: r.get("ts") or 0)
+    rows = rows[-max(1, int(limit or 20)):]
+    return json.dumps({"talker_id": int(talker_id), "count": len(rows), "messages": rows}, ensure_ascii=False)
+
+
 # ========== 启动 ==========
 
 if __name__ == "__main__":

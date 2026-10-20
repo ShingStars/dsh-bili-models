@@ -3,6 +3,34 @@
 
 # Changelog
 
+## 2.3.0 — 2026-10-20
+
+### Added
+
+- **交流轮（回评论 / 回私信）**：这是**单独一轮**，不跟「刷视频挑几条」混在一起 ——
+  用户关掉刷视频（`perDay=0`）时仍然能聊天。宿主先把「该回什么」取好写进提示词
+  （评论楼中楼带回 `BV号 / rpid / root / 昵称 / 原话`，私信带最近十几条往来），
+  模型只决定「怎么回」，不决定「回谁」—— 配额、去重、回哪个楼都能钉死。
+  去重表落在家目录 `converse-state.json`（`repliedComments` / `answeredDmTs`，各留最近 500 条）。
+  默认只回名单里的人（`converseDmUids`），`converseAnyDm=true` 才回陌生人；系统通知/账号提醒一律跳过。
+- **像真人一样说话**：`humanize`（默认开）把评论压到 10–40 字、私信 30–120 字，禁 markdown/分点/客套模板，
+  禁「首先/其次/总的来说/希望对你有帮助」这类腔调；`voiceStyle` 每轮换一种口吻（auto / casual / witty / warm / blunt），
+  `voiceNote` 可以追加自己的规矩。写的是**否定式硬约束**（列明不许做什么），比说一句「要自然」有效。
+- **自定义定时时段**：`customWindowsOn` + `customWindows`（`HH:MM-HH:MM`，一天最多 8 段）+
+  `customRepeatMin`（0 = 这段一天只跑一轮，>0 = 每 N 分钟可再来一轮）。峰谷是省钱窗口，自定义时段是日程表。
+  去重键对自定义时段带重复槽（`今天:custom:1:槽号`），峰谷两个窗口仍维持一天一次。
+- 三只只读工具：`bili_comment_replies` / `bili_dm_sessions` / `bili_dm_history`
+  （Python 侧 `bilibili_api.session.get_replies` / `get_sessions` / `fetch_session_msgs`）。
+  宿主侧也各注册一份 —— 宿主内那一轮拿到的是插件工具，不是 MCP 白名单。
+- HTTP：`POST /api/bili-duty/converse`（手动跑一次）、`GET /api/bili-duty/converse`（排队情况）；
+  `status()` 增加 `allWindows` / `customWindows` / `voice` / `converse`。
+
+### Changed
+
+- 设置页「定时」页新增「自定义定时时段」卡；「发言」页新增「像真人一样说话」与「交流轮」两张卡。
+- `runDutyInHost` 参数化（`why, round`）：交流轮复用同一套「宿主内固定会话 + turn/start→turn/end 判据」，
+  但不写日报、不数 picked、不触发复核。
+- `mcpWhitelist()` 在交流轮开启时放行 `bili_received_replies` 与三只读对话工具。
 ## 2.2.0 — 2026-10-20
 
 ### Fixed

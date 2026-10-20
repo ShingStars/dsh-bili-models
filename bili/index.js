@@ -126,6 +126,36 @@ export const Config = !z ? undefined : z.object({
   watchNotify: z.string().default('off').extra('volatile', true),
   /** 多久查一次特别关注的新视频（分钟） */
   watchEveryMin: z.natural().default(15).extra('volatile', true),
+
+  /* ================================================================
+   * 2.3.0 新增（2026-10-20：真人感发言 · 评论/私信对话 · 自定义时段）
+   * ================================================================ */
+
+  /** ⭐ 自定义定时时段（在峰谷之外再加几段）：`"09:00-10:30, 15:00-16:00, 21:00-23:00"` */
+  customWindowsOn: z.boolean().default(false).extra('volatile', true),
+  customWindows: z.string().default('').extra('volatile', true),
+  /** 自定义时段每段里隔几分钟再跑一轮（0 = 每段每天只跑一次） */
+  customRepeatMin: z.natural().default(0).extra('volatile', true),
+
+  /** ⭐ 说话像真人（关掉 = 退回以前那种规整机器腔） */
+  humanize: z.boolean().default(true).extra('volatile', true),
+  /** 语气：auto=看内容自己挑 · casual=松弛 · witty=机灵 · warm=温和 · blunt=直给 */
+  voiceStyle: z.string().default('auto').extra('volatile', true),
+  /** 额外的口吻要求（自由文本，如「别用感叹号」「偶尔带点方言」） */
+  voiceNote: z.string().default('').extra('volatile', true),
+
+  /** ⭐ 对话：能不能「聊起来」（评论楼中楼 + 私信往来），而不只是单方面通知 */
+  converseOn: z.boolean().default(false).extra('volatile', true),
+  /** 多久看一次有没有人回你 / 私信你（分钟） */
+  converseEveryMin: z.natural().default(30).extra('volatile', true),
+  /** 每轮最多回几条评论 */
+  converseCommentPerRound: z.natural().default(1).extra('volatile', true),
+  /** 每轮最多回几条私信 */
+  converseDmPerRound: z.natural().default(1).extra('volatile', true),
+  /** 私信只跟这些人聊（在 dmUids 之外再加的名单，UID 列表） */
+  converseDmUids: z.string().default('').extra('volatile', true),
+  /** 允许回陌生人的私信吗（默认否：只回名单里 / 你私信过的人） */
+  converseAnyDm: z.boolean().default(false).extra('volatile', true),
 })
 
 /**
@@ -241,6 +271,11 @@ export function apply(ctx, config) {
     runMode: 'in-host', sessionId: '', permissionPreset: 'workspace-write',
     dmUids: '', mentionNames: '',
     watchUids: '', watchNotify: 'off', watchEveryMin: 15,
+    // 2.3.0
+    customWindowsOn: false, customWindows: '', customRepeatMin: 0,
+    humanize: true, voiceStyle: 'auto', voiceNote: '',
+    converseOn: false, converseEveryMin: 30, converseCommentPerRound: 1, converseDmPerRound: 1,
+    converseDmUids: '', converseAnyDm: false,
   }
   const normalize = (src, base) => {
     const out = { ...base }
@@ -282,6 +317,15 @@ export function apply(ctx, config) {
     if ('dmUids' in p) p.dmUids = String(p.dmUids || '').slice(0, 2000)
     if ('mentionNames' in p) p.mentionNames = String(p.mentionNames || '').slice(0, 2000)
     if ('watchUids' in p) p.watchUids = String(p.watchUids || '').slice(0, 2000)
+    // 2.3.0
+    if ('customWindows' in p) p.customWindows = String(p.customWindows || '').slice(0, 500)
+    if ('customRepeatMin' in p) p.customRepeatMin = Math.max(0, Math.min(Number(p.customRepeatMin) || 0, 720))
+    if ('voiceStyle' in p) p.voiceStyle = ['auto', 'casual', 'witty', 'warm', 'blunt'].includes(String(p.voiceStyle)) ? String(p.voiceStyle) : 'auto'
+    if ('voiceNote' in p) p.voiceNote = String(p.voiceNote || '').slice(0, 1000)
+    if ('converseEveryMin' in p) p.converseEveryMin = Math.max(5, Math.min(Number(p.converseEveryMin) || 30, 1440))
+    if ('converseCommentPerRound' in p) p.converseCommentPerRound = Math.max(0, Math.min(Number(p.converseCommentPerRound) || 0, 10))
+    if ('converseDmPerRound' in p) p.converseDmPerRound = Math.max(0, Math.min(Number(p.converseDmPerRound) || 0, 10))
+    if ('converseDmUids' in p) p.converseDmUids = String(p.converseDmUids || '').slice(0, 2000)
     return p
   }
 
@@ -311,6 +355,92 @@ export function apply(ctx, config) {
     const out = []
     for (const x of splitList(c.watchUids)) { const n = Number(x) || 0; if (n > 0 && !out.includes(n)) out.push(n) }
     return out.slice(0, 50)
+  }
+
+  /* ── 2.3.0：自定义定时时段 ─────────────────────────────────────────────
+   * 峰谷那两个窗口是"官方定价带来的便宜时段"，跟用户自己的作息没关系。
+   * 这里让用户再写几段自己的时间（比如上班摸鱼的 10:00–10:30、睡前的 23:00–23:40），
+   * 格式就是人话：`09:00-10:30, 15:00-16:00`（逗号/分号/换行分隔，`-` 或 `~` 或 `到` 都认）。
+   * ⚠️ 解析失败的段直接跳过，绝不因为用户写错一个字符就整条定时器不工作。
+   */
+  const CUSTOM_WINDOW_MAX = 8
+  const customWindowList = (c = cfg) => {
+    if (!c.customWindowsOn) return []
+    const out = []
+    for (const piece of String(c.customWindows || '').split(/[,，;；\n]+/)) {
+      const m = /^\s*(\d{1,2}):(\d{2})\s*(?:-|~|到|—|–)\s*(\d{1,2}):(\d{2})\s*$/.exec(piece)
+      if (!m) continue
+      const hh = (n) => Math.max(0, Math.min(Number(n) || 0, 23))
+      const mm = (n) => Math.max(0, Math.min(Number(n) || 0, 59))
+      const start = `${String(hh(m[1])).padStart(2, '0')}:${String(mm(m[2])).padStart(2, '0')}`
+      const end = `${String(hh(m[3])).padStart(2, '0')}:${String(mm(m[4])).padStart(2, '0')}`
+      if (start === end) continue
+      out.push({ key: `custom:${out.length}`, label: `自定义 ${start}–${end}`, start, end })
+      if (out.length >= CUSTOM_WINDOW_MAX) break
+    }
+    return out
+  }
+
+  /** 所有生效的定时窗口（峰谷两个 + 自定义几段）—— 设置页/status/tick 共用一份口径 */
+  const allWindows = (c = cfg) => {
+    const out = []
+    for (const k of ['noon', 'night']) {
+      if (c.peakValley && c[k]) out.push({ key: k, label: WINDOWS[k].label, start: WINDOWS[k].start, end: WINDOWS[k].end })
+    }
+    return out.concat(customWindowList(c))
+  }
+
+  /** 对话可以跟哪些 UID 私信往来（名单 = 私信收件人 + 对话名单） */
+  const converseDmTargets = (c = cfg) => {
+    const out = [...dmTargets(c)]
+    for (const x of splitList(c.converseDmUids)) { const n = Number(x) || 0; if (n > 0 && !out.includes(n)) out.push(n) }
+    return out.slice(0, 30)
+  }
+
+  /* ── 2.3.0：让它说的话像个人 ───────────────────────────────────────────
+   * 起因（用户原话）：「优化评论对话，让 DSH 看起来更像真人」。
+   * 机器味的来源其实很固定：格式（markdown/分点）、骨架（首先/总的来说）、长度（一段顶人家三句）、
+   * 复读（每条都"赞同 + 补充"）、以及**永远正确但永远不具体**（"内容很精彩"）。
+   * ⇒ 这里把它写成一组**否定式硬约束**（说清楚不许做什么，比说"要自然"有效得多），
+   *    再叠一个「本轮口吻」（每条发言都用同一个口吻，不能一条机灵一条温柔）。
+   */
+  const VOICE_STYLES = {
+    casual: '松弛、口语化：像刷视频顺手留一句。句子短，允许省略主语，不用书面连接词。',
+    witty: '机灵、有点损但不刻薄：抓一个具体的点抖个机灵，别硬凑梗，别堆网络套话。',
+    warm: '温和、像个正常人：先接住对方的情绪，再说自己的看法，不端着。',
+    blunt: '直给、不客套：一句话说到点上，不铺垫、不总结、不讲场面话。',
+  }
+  const pickVoice = () => {
+    const s = String(cfg.voiceStyle || 'auto')
+    if (s !== 'auto' && VOICE_STYLES[s]) return { id: s, text: VOICE_STYLES[s] }
+    const keys = Object.keys(VOICE_STYLES)
+    // 按分钟取模：同一条消息重跑会换口吻，但**同一轮里的所有发言**共用这一个
+    const id = keys[Math.floor(Date.now() / 60_000) % keys.length]
+    return { id, text: VOICE_STYLES[id] }
+  }
+  /**
+   * 「像真人」那一段提示词。
+   * @param {'comment'|'dm'} where 评论还是私信（长度口径不一样）
+   */
+  const humanizeBlock = (where = 'comment') => {
+    if (!cfg.humanize) return ''
+    const v = pickVoice()
+    const len = where === 'dm'
+      ? '私信 30–120 字，最多三句话；超过就是 AI 味'
+      : '评论 10–40 字，最多两行；超过就是 AI 味'
+    return `\n\n===== 怎么说话（这一轮是**你这个人**在说话，不是在写客服回复）=====\n`
+      + `⭐ 硬要求，逐条照做：\n`
+      + `· 长度：${len}。\n`
+      + `· 开口就进正题。**禁止**「首先/其次/总的来说/希望对你有帮助/值得一提的是/不得不说/作为一个…」这类书面骨架。\n`
+      + `· **禁止任何格式**：不用 markdown、不用列表、不用分点编号、不堆 emoji（最多一个，且必须跟内容有关）。\n`
+      + `· 允许不完美：可以有口语词（啊/吧/诶/确实/属实）、可以少一个标点；但**不许**故意错别字、不许硬凑谐音梗。\n`
+      + `· 别复读对方的原话，也别每条都「赞同 + 补充」。可以反问一句、可以只接一句吐槽、可以说「这个我也刷到了」。\n`
+      + `· 同一个话题不连着发同一个结构；上一句说过的话，不许换个说法再说一遍。\n`
+      + `· 不谄媚、不端着、不解释自己是 AI；被问起就轻描淡写带过一句。\n`
+      + `· **具体 > 抽象**：说得出视频里的哪个点、哪句话、哪个数字，而不是「内容很精彩」「很有深度」。\n`
+      + `· 这一轮的口吻固定为「${v.id}」：${v.text}\n`
+      + (String(cfg.voiceNote || '').trim() ? `· 另外使用者还要求：${String(cfg.voiceNote).trim()}\n` : '')
+      + `===== 怎么说话（结束）=====\n`
   }
 
   const hostCfg = () => normalize(config, { ...DEFAULTS })       // 宿主那份（schema 校验过、默认值已填）
@@ -642,6 +772,37 @@ export function apply(ctx, config) {
     async execute(args) { return call('bili_video_info', { bvid: String(args.bvid ?? '') }) },
   })
 
+  // ⭐ 2.3.0：交流轮那三只。宿主内跑的那一轮拿到的是**插件工具**（不是 MCP 白名单），
+  //    所以这三只必须在宿主侧也注册一份，否则交流轮一开始调用就报"没有这个工具"。
+  tool({
+    name: 'bili_comment_replies',
+    description: '看谁回复了你的评论（楼中楼），带回 BV 号 / rpid / root / 昵称 / 原话。'
+      + '交流轮靠它拿"该回哪条楼"，回的时候 rpid 必填、root 有就填。',
+    parameters: { max_items: { type: 'number', description: '最多取几条（默认 20）' } },
+    async execute(args) { return call('bili_comment_replies', { max_items: Number(args?.max_items) || 20 }) },
+  })
+
+  tool({
+    name: 'bili_dm_sessions',
+    description: '列出私信会话（谁发来的、最后一句是啥、有没有未读）。`system=true` 的是账号通知，不是人。',
+    parameters: { max_items: { type: 'number', description: '最多列几个会话（默认 10）' } },
+    async execute(args) { return call('bili_dm_sessions', { max_items: Number(args?.max_items) || 10 }) },
+  })
+
+  tool({
+    name: 'bili_dm_history',
+    description: '取某个人的私信往来（最近几十条，按时间升序）。回私信前用它把上下文看全，别答非所问。',
+    parameters: {
+      talker_id: { type: 'number', description: '对方的 UID（bili_dm_sessions 里的 talker_id）' },
+      limit: { type: 'number', description: '取几条（默认 20）' },
+    },
+    async execute(args) {
+      const uid = Number(args?.talker_id) || 0
+      if (!uid) return { ok: false, error: 'talker_id 必须是数字 UID' }
+      return call('bili_dm_history', { talker_id: uid, limit: Number(args?.limit) || 20 })
+    },
+  })
+
   tool({
     name: 'bili_status',
     description: '看它今天的状态：跑了没跑、挑了几条、额度剩多少、报告在哪、登录过没有、下次窗口什么时候开。',
@@ -730,7 +891,12 @@ export function apply(ctx, config) {
       + '私信投递：`{"dmMode":"only","dmUid":12345678}`（dmMode = off / only / both）；'
       + '多人：`{"dmUids":"123,456","mentionNames":"甲,乙"}`；'
       + '特别关注：`{"watchUids":"123,456","watchNotify":"dm","watchEveryMin":15}`（watchNotify = off / dm / comment / both）；'
-      + '运行方式：`{"runMode":"in-host"}`（in-host = 宿主内同一条固定会话；headless = 起子进程）。',
+      + '运行方式：`{"runMode":"in-host"}`（in-host = 宿主内同一条固定会话；headless = 起子进程）。\n'
+      + '2.3.0 新增：自定义时段：`{"customWindowsOn":true,"customWindows":"09:30-11:00,15:00-17:30","customRepeatMin":0}`'
+      + '（峰谷之外另开的时段，一天多段；customRepeatMin>0 表示该时段每 N 分钟可再来一轮）；'
+      + '真人感：`{"humanize":true,"voiceStyle":"casual","voiceNote":"别用网络烂梗"}`（voiceStyle = auto / casual / witty / warm / blunt）；'
+      + '交流轮：`{"converseOn":true,"converseEveryMin":30,"converseCommentPerRound":1,"converseDmPerRound":1,'
+      + '"converseDmUids":"123","converseAnyDm":false}`（默认只回名单里的人，converseAnyDm=true 才回陌生人）。',
     parameters: { patch: { type: 'object', additionalProperties: true, description: '要改的字段（可省）' } },
     async execute(args) {
       let host = null
@@ -1094,7 +1260,7 @@ export function apply(ctx, config) {
       + ` —— 一行一条：日期 · BV 号 · 标题 · UP · 一句话结论 · 链接（跳过的那条在后面注明理由）；`
       + `这是**给以后检索用**的（报告是给人看的，归档是给"回头翻"用的），别省略、也别只写挑中的。`
       + `自动评论并 @ ${mentions.length ? mentions.join('、') : '（还没填要 @ 谁）'} 是${commentOn
-        ? `开着的（每轮最多 ${cfg.commentPerRound} 条评论，每条在正文里用纯文本 @ 上面这些昵称，@ 一次就够，150 字内）`
+        ? `开着的（每轮最多 ${cfg.commentPerRound} 条评论，每条在正文里用纯文本 @ 上面这些昵称，@ 一次就够，${cfg.humanize ? '10–40 字' : '150 字内'}）`
         : (cfg.dmMode === 'only'
           ? '关着的 —— 当前是「**只私信**」模式：**这一轮一条公开评论都不许发**，改走私信'
           : '关着的（只写报告，别发评论）')}。`
@@ -1118,8 +1284,11 @@ export function apply(ctx, config) {
           + (cfg.dmMode === 'both' ? `⚠️ 现在是 **both**：公开评论照发（走下面那一整套规矩），私信**另外**再发一条。` : '')
         : '')
       + (cfg.replyToComments
-        ? `回复评论：开着（每轮最多回 ${Number(cfg.replyPerRound) || 1} 条）—— 只回「直接回复到你那条评论下面的人」，回完记进报告；找不到你那条评论就跳过，别硬找。`
+        ? (cfg.converseOn
+          ? `回复评论：这件事交给**交流轮**专门处理（它有自己的节奏和配额）—— 这一轮**一条回复都不要发**，免得同一楼被回两遍。`
+          : `回复评论：开着（每轮最多回 ${Number(cfg.replyPerRound) || 1} 条）—— 只回「直接回复到你那条评论下面的人」，回完记进报告；找不到你那条评论就跳过，别硬找。`)
         : `回复评论：关着（一个字都不要回任何人 —— 有人回复你那条评论也不要理）。`)
+      + humanizeBlock('comment')
       + `最后用一句话汇报你挑到了什么。现在几点了自己看一眼系统时间。`
   }
 
@@ -1145,7 +1314,9 @@ export function apply(ctx, config) {
     //    投递方式和回评论各自要一只工具，漏了的话那一轮想发私信 / 想看谁回了你，
     //    手上根本没有对应工具，agent 只能绕过去直连接口。
     if ((cfg.dmMode && cfg.dmMode !== 'off') || dmTargets().length) list.push('bili_send_message')
-    if (cfg.replyToComments) list.push('bili_received_replies')
+    if (cfg.replyToComments || cfg.converseOn) list.push('bili_received_replies')
+    // 2.3.0 对话轮要读：评论回复（整理过的）+ 私信会话 + 私信往来
+    if (cfg.converseOn) list.push('bili_comment_replies', 'bili_dm_sessions', 'bili_dm_history')
     return list
   }
 
@@ -1477,17 +1648,19 @@ export function apply(ctx, config) {
     return { id: randomUUID(), role: 'user', content: [{ type: 'text', text }], source }
   }
 
-  const runDutyInHost = async (why = 'window') => {
+  const runDutyInHost = async (why = 'window', round = {}) => {
     refreshCfg()
+    const tag = round.tag || '刷B站'
+    const isConverse = Boolean(round.converse)
     const agents = hostSvc('agents')
     if (!agents) {
       const msg = '这一轮没跑：宿主里没有 agents 服务（插件不在宿主进程里？）'
       log(msg)
-      try { stubReportIfMissing(1) } catch { /* 补不上也把话说清楚 */ }
+      if (!isConverse) { try { stubReportIfMissing(1) } catch { /* 补不上也把话说清楚 */ } }
       return { started: false, why, mode: 'in-host', error: msg }
     }
     const sessionId = dutySessionId()
-    const text = promptFor()
+    const text = round.text || promptFor()
     const t0 = Date.now()
     let agent = null
     try {
@@ -1496,7 +1669,7 @@ export function apply(ctx, config) {
         const composition = await composeDutyAgent()
         const opts = agentOptionsFor()
         const setup = composition.setup
-        log(`刷B站开跑（${why}，宿主内会话 ${sessionId}${composition.agentPreset ? `，preset=${composition.agentPreset}` : ''}${opts ? `，模型=${opts.provider}/${opts.model}` : ''}）`)
+        log(`${tag}开跑（${why}，宿主内会话 ${sessionId}${composition.agentPreset ? `，preset=${composition.agentPreset}` : ''}${opts ? `，模型=${opts.provider}/${opts.model}` : ''}）`)
         // 先试「沿用这条持久化会话」，没有就新建一条（都是同一条会话 id，不会另开）
         let handle = null
         try {
@@ -1664,21 +1837,23 @@ export function apply(ctx, config) {
       const secs = Math.round((Date.now() - t0) / 1000)
       // 结束原因不是 completed（error/aborted/blocked）也算这一轮没跑成
       const bad = (turnEndReason && turnEndReason !== 'completed') || flushErr
-      log(`刷B站结束（${why}，宿主内，${secs}s${bad ? '，未跑成' : ''}）`)
-      stubReportIfMissing(bad ? 1 : 0)
-      rotateLogIfBig()
-      try {
-        const st = readJson(dutyStateFile, {})
-        const prev = st.day === dayKey() ? Number(st.picked || 0) : 0
-        const picked = countPickedToday()
-        if (picked > prev) { bumpState({ picked }); log(`今天挑到 ${picked} 条（上限 ${Number(cfg.perDay) || 0} 条）`) }
-      } catch (e) { log(`数挑了几条时出错（不影响这一轮）：${e?.message ?? e}`) }
-      const verifyTimer = setTimeout(() => { Promise.resolve(runVerify('round')).catch((e) => log('复核异常：' + (e?.message ?? e))) }, 90_000)
-      verifyTimer.unref?.()
-      return { started: true, why, mode: 'in-host', sessionId, log: logFile }
+      log(`${tag}结束（${why}，宿主内，${secs}s${bad ? '，未跑成' : ''}）`)
+      if (!isConverse) {
+        stubReportIfMissing(bad ? 1 : 0)
+        rotateLogIfBig()
+        try {
+          const st = readJson(dutyStateFile, {})
+          const prev = st.day === dayKey() ? Number(st.picked || 0) : 0
+          const picked = countPickedToday()
+          if (picked > prev) { bumpState({ picked }); log(`今天挑到 ${picked} 条（上限 ${Number(cfg.perDay) || 0} 条）`) }
+        } catch (e) { log(`数挑了几条时出错（不影响这一轮）：${e?.message ?? e}`) }
+        const verifyTimer = setTimeout(() => { Promise.resolve(runVerify('round')).catch((e) => log('复核异常：' + (e?.message ?? e))) }, 90_000)
+        verifyTimer.unref?.()
+      }
+      return { started: true, why, mode: 'in-host', sessionId, log: logFile, reason: turnEndReason, bad: Boolean(bad) }
     } catch (e) {
-      log(`刷B站失败（${why}，宿主内）：${e?.stack ?? e}`)
-      try { stubReportIfMissing(1) } catch { /* 补不上也不影响日志 */ }
+      log(`${tag}失败（${why}，宿主内）：${e?.stack ?? e}`)
+      if (!isConverse) { try { stubReportIfMissing(1) } catch { /* 补不上也不影响日志 */ } }
       return { started: false, why, mode: 'in-host', sessionId, error: String(e?.message ?? e) }
     }
   }
@@ -1693,6 +1868,143 @@ export function apply(ctx, config) {
     return p
   }
 
+  /* ─────────────── 2.3.0：交流轮（评论楼中楼 + 私信往来） ───────────────
+   * 为什么单独一轮：值班轮干的是「去刷视频、挑几条」，交流轮干的是「看看有没有人跟你说话」。
+   * 两件事的节奏、配额、失败代价都不一样 —— 混在一轮里会让刷视频那轮被聊天拖住，
+   * 而且用户关掉刷视频（perDay=0）时仍然应该能聊天。
+   * ⚠️ 关键设计：**数据由宿主先取好、直接写进提示词** —— 不让模型自己决定"回谁"，
+   *    它只负责"怎么回"。这样配额、去重、哪个楼该回都能钉死，也不容易答错楼。
+   */
+  const converseStateFile = join(stateDir, 'converse-state.json')
+  let converseBusy = false
+  let converseLastAt = 0
+  const emptyObj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {})
+  const readConverseState = () => {
+    const j = emptyObj(readJson(converseStateFile, {}))
+    return { repliedComments: emptyObj(j.repliedComments), answeredDmTs: emptyObj(j.answeredDmTs), at: Number(j.at) || 0 }
+  }
+  const writeConverseState = (s) => {
+    try { writeJson(converseStateFile, { ...s, at: Date.now() }) } catch (e) { log('记对话状态失败：' + (e?.message ?? e)) }
+  }
+  const trimSeen = (obj, max = 500) =>
+    Object.fromEntries(Object.entries(obj).sort((a, b) => Number(b[1]) - Number(a[1])).slice(0, max))
+
+  /** 把「该回什么」取出来：评论回复 + 私信会话（都按去重表过滤过） */
+  const collectConversation = async () => {
+    const cs = readConverseState()
+    const comments = []
+    const dms = []
+    const wantComments = Math.max(0, Number(cfg.converseCommentPerRound) || 0)
+    const wantDms = Math.max(0, Number(cfg.converseDmPerRound) || 0)
+    if (wantComments > 0) {
+      try {
+        const r = await call('bili_comment_replies', { max_items: 20 })
+        for (const it of (Array.isArray(r?.replies) ? r.replies : [])) {
+          const rpid = String(it?.rpid || '')
+          if (!rpid || !it?.bvid) continue
+          if (cs.repliedComments[rpid]) continue
+          if (!String(it?.text || '').trim()) continue
+          comments.push({
+            bvid: String(it.bvid),
+            rpid: Number(it.rpid) || 0,
+            root: Number(it.root) || 0,
+            uid: Number(it.uid) || 0,
+            nick: String(it.nick || ''),
+            text: String(it.text).slice(0, 400),
+          })
+          if (comments.length >= wantComments) break
+        }
+      } catch (e) { log('读评论回复失败（不影响私信）：' + (e?.message ?? e)) }
+    }
+    if (wantDms > 0) {
+      const allow = converseDmTargets()
+      try {
+        const r = await call('bili_dm_sessions', { max_items: 15 })
+        for (const s of (Array.isArray(r?.sessions) ? r.sessions : [])) {
+          if (s?.system) continue           // 账号登录提醒这类不是人，别去回
+          if (s?.from_me) continue          // 最后一句是我说的 ⇒ 等对方回
+          const uid = Number(s?.talker_id) || 0
+          if (!uid) continue
+          if (!cfg.converseAnyDm && !allow.includes(uid)) continue
+          const ts = Number(s?.ts) || 0
+          if (Number(cs.answeredDmTs[String(uid)] || 0) >= ts) continue
+          let messages = []
+          try {
+            const h = await call('bili_dm_history', { talker_id: uid, limit: 12 })
+            messages = (Array.isArray(h?.messages) ? h.messages : []).map((m) => ({
+              fromMe: Boolean(m?.from_me),
+              text: String(m?.text || '').slice(0, 400),
+            }))
+          } catch (e) { log(`读私信往来失败（${uid}）：${e?.message ?? e}`) }
+          dms.push({ uid, lastTs: ts, messages })
+          if (dms.length >= wantDms) break
+        }
+      } catch (e) { log('读私信会话失败：' + (e?.message ?? e)) }
+    }
+    return { comments, dms, cs }
+  }
+
+  const conversePrompt = ({ comments, dms }) => {
+    let s = '你现在是这个账号在 B站 上**聊天的那一半** —— 不是刷视频那一轮：别去搜新视频、别写日报、别挑内容。\n'
+    s += '下面这些是宿主已经替你取好的「该回什么」，**只回这些，别自己另找**。\n'
+    if (comments.length) {
+      s += '\n===== 评论：有人回复了你的评论 =====\n'
+      comments.forEach((c, i) => {
+        s += `${i + 1}) BV号 ${c.bvid} · 对方 rpid=${c.rpid}${c.root ? ` · 楼根 root=${c.root}` : ''} · ${c.nick || `UID ${c.uid}`} 说：「${c.text}」\n`
+      })
+      s += `回法：用 bili_reply 工具 —— bvid 用上面那个 BV 号，text 写你的回复，rpid 填对方那条的 rpid`
+        + (comments.some((c) => c.root) ? '，root 填楼根那个数（没有就填 rpid）' : '') + '。\n'
+      s += '⚠️ 楼中楼回复**必须带 rpid**（以及 root），否则会变成一条新的顶层评论 —— 那看起来完全不像人在接话。\n'
+    }
+    if (dms.length) {
+      s += '\n===== 私信：有人给你发消息 =====\n'
+      dms.forEach((d, i) => {
+        s += `\n【${i + 1}】对方 UID ${d.uid}\n`
+        for (const m of d.messages) s += `  ${m.fromMe ? '我' : '对方'}：${m.text}\n`
+      })
+      s += '\n回法：用 bili_send_message，receiver_uid 用上面那个人 UID，text 写你的回复（接口上限 500 字符，'
+        + '但**按真人长度写**，别写满、别列清单）。\n'
+      s += '⚠️ 一个人只发一条；发完就停，别追着连发。\n'
+    }
+    s += '\n===== 聊天规矩 =====\n'
+    s += '· 一条回复**只做一件事**：接话，或者反问。别又解释又反问又总结。\n'
+    s += '· 对方只是点个赞、或说一句「好」「哈哈」，就回一个同量级的话，别硬展开成长篇。\n'
+    s += '· 对方问事实（哪个视频、多少钱、怎么做）才给具体信息；对方在吐槽，就跟着吐槽一句。\n'
+    s += '· 不确定的事就说「没太注意」，**别编**；说错了比不回更糟。\n'
+    s += '· 不要复读对方原话，不要「赞同 + 补充」那套模板，不要客套收尾（「希望对你有帮助」）。\n'
+    s += '· 对方语气冲，也不用卑躬屈膝；正常还一句就行。\n'
+    s += humanizeBlock('comment')
+    s += '\n做完用一句话汇报：回了几条评论、几条私信，分别是谁。'
+    return s
+  }
+
+  const converseRound = async (why = 'timer') => {
+    refreshCfg()
+    if (!cfg.converseOn) return { ok: true, started: false, reason: '交流轮没开（converseOn=false）' }
+    if (converseBusy) return { ok: true, started: false, reason: '上一轮还在跑' }
+    converseBusy = true
+    converseLastAt = Date.now()
+    try {
+      const pending = await collectConversation()
+      const n = pending.comments.length + pending.dms.length
+      if (!n) { log('交流轮：没有新的回复/私信'); return { ok: true, started: false, reason: '没有新的回复/私信' } }
+      log(`交流轮开跑（${why}）：评论 ${pending.comments.length} 条、私信 ${pending.dms.length} 人`)
+      const r = await runDutyInHost(`converse:${why}`, { text: conversePrompt(pending), converse: true, tag: '交流轮' })
+      if (r?.started) {
+        const seen = pending.cs
+        for (const c of pending.comments) seen.repliedComments[String(c.rpid)] = Date.now()
+        for (const d of pending.dms) seen.answeredDmTs[String(d.uid)] = d.lastTs
+        writeConverseState({ repliedComments: trimSeen(seen.repliedComments), answeredDmTs: trimSeen(seen.answeredDmTs) })
+      }
+      return { ...r, comments: pending.comments.length, dms: pending.dms.length }
+    } catch (e) {
+      log(`交流轮出错（已兜住）：${e?.stack ?? e}`)
+      return { ok: false, started: false, error: String(e?.message ?? e) }
+    } finally {
+      converseBusy = false
+    }
+  }
+
   /* ─────────────── 谷时定时器 ───────────────
    * 🔴 2026-10-14 事故（使用者那边表现为"DSH 突然崩了、网页 Failed to fetch (gateway/internal)"）：
    *    第一版是 `setInterval(tick, 60_000)`，回调里抛的 TypeError **没人接**，直接把整个宿主进程带走
@@ -1702,22 +2014,27 @@ export function apply(ctx, config) {
   const tick = () => {
     try {
       refreshCfg()                    // ⭐ 定时器活得比设置页久：每一跳都重新读一遍配置
-      if (!cfg.peakValley) return
       const now = new Date()
+      const wins = allWindows()       // 峰谷（开着的）+ 自定义时段
+      if (!wins.length) return
       const st = readJson(dutyStateFile, {})
       const today = dayKey(now)
       // ⭐ 闸门看的是「今天已经**挑到几条**」（从今天的报告里数出来），不是「跑了几轮」
       if (countPickedToday(now) >= Number(cfg.perDay || 0)) return
       // ⭐ 「不写日报」那档没有报告可数 ⇒ 数不出条数就保守一点：一天只跑一轮
       if (String(cfg.reportLevel || 'full') === 'off' && roundsToday(now) >= 1) return
-      for (const k of ['noon', 'night']) {
-        if (!cfg[k]) continue
-        if (!inWindow(now, WINDOWS[k])) continue
-        const key = `${today}:${k}`
-        if (st.windows?.[key]) continue
-        bumpState({ windows: { ...(st.windows || {}), [key]: true }, count: roundsToday(now) + 1, lastRunAt: now.toISOString(), lastWhy: k })
+      const repeat = Math.max(0, Number(cfg.customRepeatMin) || 0)
+      for (const w of wins) {
+        if (!inWindow(now, w)) continue
+        // 自定义时段可以「隔 N 分钟再来一轮」；峰谷两个窗口维持一天一次
+        // （那两个是省钱窗口，不是日程表 —— 一天跑一次就够，反复跑只会把额度烧光）
+        const slot = w.key.startsWith('custom:') && repeat > 0
+          ? `${today}:${w.key}:${Math.floor((now.getHours() * 60 + now.getMinutes()) / repeat)}`
+          : `${today}:${w.key}`
+        if (st.windows?.[slot]) continue
+        bumpState({ windows: { ...(st.windows || {}), [slot]: true }, count: roundsToday(now) + 1, lastRunAt: now.toISOString(), lastWhy: w.key })
         // ⭐ in-host 那条是异步的（要等整轮跑完），这里不等 —— 但必须自己兜住异常
-        Promise.resolve(runDuty(`window:${k}`)).catch((e) => log(`刷B站（定时器）异常：${e?.stack ?? e}`))
+        Promise.resolve(runDuty(`window:${w.key}`)).catch((e) => log(`刷B站（定时器）异常：${e?.stack ?? e}`))
         return
       }
     } catch (e) {
@@ -1730,6 +2047,21 @@ export function apply(ctx, config) {
     timer.unref?.()                                    // 别因为这个定时器让进程不肯退出
     ctx.effect(() => () => clearInterval(timer), 'bili-duty: 谷时定时器')
   } catch (e) { log(`定时器没起来：${e?.message ?? e}`) }
+
+  /* ⭐ 2.3.0：交流轮定时器（每 60 秒醒一次，真正间隔由 converseEveryMin 决定） */
+  try {
+    const convTimer = setInterval(() => {
+      try {
+        refreshCfg()
+        if (!cfg.converseOn) return
+        const every = Math.max(5, Number(cfg.converseEveryMin) || 30) * 60_000
+        if (converseLastAt && Date.now() - converseLastAt < every) return
+        Promise.resolve(converseRound('timer')).catch((e) => log(`交流轮定时器异常（已兜住）：${e?.stack ?? e}`))
+      } catch (e) { log(`交流轮定时器这一跳出错（已兜住）：${e?.stack ?? e}`) }
+    }, 60_000)
+    convTimer.unref?.()
+    ctx.effect(() => () => clearInterval(convTimer), 'bili-duty: 交流轮定时器')
+  } catch (e) { log(`交流轮定时器没起来：${e?.message ?? e}`) }
 
   /* ⭐ 2.1.0：特别关注的轮询（每 60 秒醒一次，真正查的间隔由 watchEveryMin 决定） */
   try {
@@ -2088,6 +2420,33 @@ export function apply(ctx, config) {
           return { uids: watchTargets(), notify: String(cfg.watchNotify || 'off'), everyMin: Number(cfg.watchEveryMin) || 15, lastCheckAt: w.at || 0, ups: Object.entries(w.seen).map(([uid, v]) => ({ uid: Number(uid), name: v?.name || '', last: v?.last || 0 })) }
         } catch { return { uids: [], notify: 'off', everyMin: 15, lastCheckAt: 0, ups: [] } }
       })(),
+      // ── 2.3.0：自定义时段 / 真人感 / 交流轮 ──
+      allWindows: (() => {
+        try { return allWindows() } catch { return [] }
+      })(),
+      customWindows: (() => {
+        try {
+          const now = new Date()
+          return customWindowList().map((w) => ({ ...w, inWindow: inWindow(now, w) }))
+        } catch { return [] }
+      })(),
+      voice: { humanize: Boolean(cfg.humanize), style: String(cfg.voiceStyle || 'auto'), name: (() => { try { return pickVoice().name } catch { return '' } })() },
+      converse: (() => {
+        let st2 = { repliedComments: {}, answeredDmTs: {} }
+        try { st2 = readConverseState() } catch { /* 读不到就当空表 */ }
+        return {
+          on: Boolean(cfg.converseOn),
+          everyMin: Number(cfg.converseEveryMin) || 30,
+          commentPerRound: Number(cfg.converseCommentPerRound) || 0,
+          dmPerRound: Number(cfg.converseDmPerRound) || 0,
+          anyDm: Boolean(cfg.converseAnyDm),
+          targets: (() => { try { return converseDmTargets() } catch { return [] } })(),
+          repliedCount: Object.keys(st2.repliedComments || {}).length,
+          answeredCount: Object.keys(st2.answeredDmTs || {}).length,
+          lastAt: converseLastAt || 0,
+          busy: converseBusy,
+        }
+      })(),
     }
   }
 
@@ -2144,7 +2503,12 @@ export function apply(ctx, config) {
         'modelProvider', 'modelName', 'modelEffort', 'bridgePlugins',
         // 2.1.0
         'runMode', 'sessionId', 'permissionPreset', 'dmUids', 'mentionNames',
-        'watchUids', 'watchNotify', 'watchEveryMin']) {
+        'watchUids', 'watchNotify', 'watchEveryMin',
+        // 2.3.0
+        'customWindowsOn', 'customWindows', 'customRepeatMin',
+        'humanize', 'voiceStyle', 'voiceNote',
+        'converseOn', 'converseEveryMin', 'converseCommentPerRound', 'converseDmPerRound',
+        'converseDmUids', 'converseAnyDm']) {
         if (k in body) patch[k] = body[k]
       }
       // ⭐ 范围钳制 + 两份都写（config.json / DSH 原生设置页），统一走 persistCfg —— 见文件上方
@@ -2180,6 +2544,35 @@ export function apply(ctx, config) {
         everyMin: Number(cfg.watchEveryMin) || 15,
         lastCheckAt: st.at || 0,
         ups: Object.entries(st.seen).map(([uid, v]) => ({ uid: Number(uid), name: v?.name || '', last: v?.last || 0, count: Array.isArray(v?.bvids) ? v.bvids.length : 0 })),
+      })
+    }
+
+    // ⭐ 2.3.0：交流轮 —— 手动跑一次 / 看排队情况
+    //    和 /run 一样：真跑要几分钟，HTTP 不能挂着等，先回"开跑了"。
+    if (req.method === 'POST' && path === '/api/bili-duty/converse') {
+      const r = converseRound('manual')
+      if (r && typeof r.then === 'function') {
+        r.catch((e) => log(`交流轮（HTTP 触发）异常：${e?.stack ?? e}`))
+        return sendJson(res, 200, { ok: true, started: true, pending: true })
+      }
+      return sendJson(res, 200, { ok: true, ...r })
+    }
+    if (req.method === 'GET' && path === '/api/bili-duty/converse') {
+      refreshCfg()
+      let st2 = { repliedComments: {}, answeredDmTs: {} }
+      try { st2 = readConverseState() } catch { /* 读不到就当空表 */ }
+      return sendJson(res, 200, {
+        ok: true,
+        on: Boolean(cfg.converseOn),
+        everyMin: Number(cfg.converseEveryMin) || 30,
+        commentPerRound: Number(cfg.converseCommentPerRound) || 0,
+        dmPerRound: Number(cfg.converseDmPerRound) || 0,
+        anyDm: Boolean(cfg.converseAnyDm),
+        targets: (() => { try { return converseDmTargets() } catch { return [] } })(),
+        repliedCount: Object.keys(st2.repliedComments || {}).length,
+        answeredCount: Object.keys(st2.answeredDmTs || {}).length,
+        lastAt: converseLastAt || 0,
+        busy: converseBusy,
       })
     }
 

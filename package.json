@@ -1,6 +1,6 @@
 {
   "name": "dsh-bili-models",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "刷B站 + 可选模型：在 dsh-bili-scroll 的基础上加「这一轮用哪个模型」，可选 DSH 里任何已注册的模型（含其它插件提供的，如 Our Free Model）",
   "keywords": [
     "dsh",

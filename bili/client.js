@@ -303,6 +303,21 @@ select[data-bd-input]{cursor:pointer;}
       const [runMode, setRunMode] = React.useState(null)
       const [sessId, setSessId] = React.useState(null)
 
+      /* 2.3.0：自定义时段 / 真人感 / 交流轮 */
+      const [customOn, setCustomOn] = React.useState(null)
+      const [customWin, setCustomWin] = React.useState(null)
+      const [customRepeat, setCustomRepeat] = React.useState(null)
+      const [humanize, setHumanize] = React.useState(null)
+      const [voiceStyle, setVoiceStyle] = React.useState(null)
+      const [voiceNote, setVoiceNote] = React.useState(null)
+      const [converseOn, setConverseOn] = React.useState(null)
+      const [converseEvery, setConverseEvery] = React.useState(null)
+      const [converseComments, setConverseComments] = React.useState(null)
+      const [converseDms, setConverseDms] = React.useState(null)
+      const [converseDmUids, setConverseDmUids] = React.useState(null)
+      const [converseAnyDm, setConverseAnyDm] = React.useState(null)
+      const [converseInfo, setConverseInfo] = React.useState(null)
+
       /* 扫码轮询的 timer 必须能停：切走页面后跑到已卸载组件上 setState 会报警告 */
       const loginTimer = React.useRef(null)
       const alive = React.useRef(true)
@@ -334,12 +349,29 @@ select[data-bd-input]{cursor:pointer;}
         if (watchEvery === null) setWatchEvery(String(cfg.watchEveryMin ?? 15))
         if (runMode === null) setRunMode(cfg.runMode || 'in-host')
         if (sessId === null) setSessId(cfg.sessionId || '')
+        if (customOn === null) setCustomOn(Boolean(cfg.customWindowsOn))
+        if (customWin === null) setCustomWin(cfg.customWindows || '')
+        if (customRepeat === null) setCustomRepeat(String(cfg.customRepeatMin ?? 0))
+        if (humanize === null) setHumanize(cfg.humanize !== false)
+        if (voiceStyle === null) setVoiceStyle(cfg.voiceStyle || 'auto')
+        if (voiceNote === null) setVoiceNote(cfg.voiceNote || '')
+        if (converseOn === null) setConverseOn(Boolean(cfg.converseOn))
+        if (converseEvery === null) setConverseEvery(String(cfg.converseEveryMin ?? 30))
+        if (converseComments === null) setConverseComments(String(cfg.converseCommentPerRound ?? 1))
+        if (converseDms === null) setConverseDms(String(cfg.converseDmPerRound ?? 1))
+        if (converseDmUids === null) setConverseDmUids(cfg.converseDmUids || '')
+        if (converseAnyDm === null) setConverseAnyDm(Boolean(cfg.converseAnyDm))
       }, [cfg])
 
       const loadWatch = React.useCallback(() => {
         jget('/watch').then((r) => setWatchInfo(r || null)).catch(() => {})
       }, [])
       React.useEffect(() => { loadWatch() }, [])
+
+      const loadConverse = React.useCallback(() => {
+        jget('/converse').then((r) => setConverseInfo(r || null)).catch(() => {})
+      }, [])
+      React.useEffect(() => { loadConverse() }, [])
 
       /* 模型清单只在进页面时拉一次（服务端有 30 秒缓存） */
       React.useEffect(() => {
@@ -465,6 +497,17 @@ select[data-bd-input]{cursor:pointer;}
         finally { setBusy('') }
       }
 
+      /* ⭐ 2.3.0：手动跑一次交流轮 */
+      const onConverseRun = async () => {
+        setBusy('converse')
+        try {
+          const r = await jpost('/converse', {})
+          say(r?.started ? '交流轮已开跑（回完看 duty.log 那行「交流轮」）' : `没跑：${r?.reason || '未知原因'}`, r?.started ? 'good' : 'warn')
+          loadConverse()
+        } catch (e) { say(String(e?.message ?? e), 'bad') }
+        finally { setBusy('') }
+      }
+
       const onLoginStart = async () => {
         setBusy('login')
         setLoginTone('')
@@ -570,8 +613,33 @@ select[data-bd-input]{cursor:pointer;}
               key: k, label: win[k].label, note: `${win[k].start} – ${win[k].end}`,
             }, h(Switch, { on: on(k), onChange: (v) => patch({ [k]: v }, win[k].label) })))
           ) : null),
-        h(Card, { key: 'quota', title: '一轮挑几条' },
-          h(Field, { label: '每天最多挑几条', note: '填 0 = 不自动刷（仍可手动跑）' },
+        /* ⭐ 2.3.0：自定义时段（峰谷之外的日程） */
+        h(Card, { key: 'custom', title: '自定义定时时段', desc: '除了峰谷，另开几段时间自动跑 —— 峰谷是省钱窗口，这里是日程表' },
+          h(Field, { label: '启用自定义时段' },
+            h(Switch, { on: Boolean(customOn), onChange: (v) => { setCustomOn(v); patch({ customWindowsOn: v }, '自定义时段') } })),
+          (customOn) ? h('div', { 'data-bd-sub': '' },
+            h(Field, { label: '时间段', note: '每行一段，格式 HH:MM-HH:MM；一天最多 8 段', wide: true },
+              h('textarea', {
+                'data-bd-input': '', rows: 3, value: customWin ?? '',
+                placeholder: '例如：\n09:30-11:00\n15:00-17:30\n21:00-23:30',
+                onChange: (e) => setCustomWin(e.target.value),
+                onBlur: () => { const v = String(customWin || '').trim(); setCustomWin(v); patch({ customWindows: v }, '自定义时段') },
+              })),
+            h(Field, { label: '隔多久可以再来一轮', note: '0 = 这段时间一天只跑一轮；>0 = 每 N 分钟一次（受每天总量限制）' },
+              h('input', {
+                'data-bd-input': '', 'data-bd-num': '', type: 'number', min: 0, max: 720,
+                value: customRepeat ?? '',
+                onChange: (e) => setCustomRepeat(e.target.value),
+                onBlur: () => {
+                  const n = Math.max(0, Math.min(Number(customRepeat) || 0, 720))
+                  setCustomRepeat(String(n)); patch({ customRepeatMin: n }, '自定义时段间隔')
+                },
+              })),
+            (Array.isArray(st.customWindows) && st.customWindows.length)
+              ? h('div', { 'data-bd-note': '' }, '已识别：' + st.customWindows.map((w) => `${w.start}–${w.end}${w.inWindow ? '（现在就在里面）' : ''}`).join('、'))
+              : h('div', { 'data-bd-note': '' }, '还没识别出时间段 —— 检查一下格式对不对')) : null),
+
+        h(Card, { key: 'quota', title: '一轮挑几条' },          h(Field, { label: '每天最多挑几条', note: '填 0 = 不自动刷（仍可手动跑）' },
             h('input', {
               'data-bd-input': '', 'data-bd-num': '', type: 'number', min: 0, max: 50,
               value: perDay ?? '',
@@ -672,6 +740,85 @@ select[data-bd-input]{cursor:pointer;}
                 setReplyPer(String(n)); patch({ replyPerRound: n }, '每轮几条回复')
               },
             })) : null),
+        /* ⭐ 2.3.0：像真人一样说话 */
+        h(Card, { key: 'voice', title: '像真人一样说话', desc: '把发言压短、去掉客套和模板腔 —— 短、具体、一次只说一件事' },
+          h(Field, { label: '真人感', note: '默认开；关掉就回到"150 字内、可以分点"的写法' },
+            h(Switch, { on: humanize !== false, onChange: (v) => { setHumanize(v); patch({ humanize: v }, '真人感') } })),
+          (humanize !== false) ? h('div', { 'data-bd-sub': '' },
+            h(Field, { label: '语气' },
+              h(Segment, {
+                value: voiceStyle ?? 'auto',
+                options: [
+                  { value: 'auto', label: '每轮换' },
+                  { value: 'casual', label: '松弛' },
+                  { value: 'witty', label: '机灵' },
+                  { value: 'warm', label: '温和' },
+                  { value: 'blunt', label: '直给' },
+                ],
+                onChange: (v) => { setVoiceStyle(v); patch({ voiceStyle: v }, '语气') },
+              })),
+            h(Field, { label: '额外要求', note: '写进每一轮的说话规矩里，可留空', wide: true },
+              h('input', {
+                'data-bd-input': '', value: voiceNote ?? '',
+                placeholder: '例如：别用网络烂梗、别提自己是 AI',
+                onChange: (e) => setVoiceNote(e.target.value),
+                onBlur: () => { const v = String(voiceNote || '').trim(); setVoiceNote(v); patch({ voiceNote: v }, '说话要求') },
+              })),
+            h('div', { 'data-bd-note': '' }, `这一轮口吻：${(st.voice && st.voice.name) || '（自动）'}`)) : null),
+
+        /* ⭐ 2.3.0：交流轮（评论楼中楼 + 私信往来） */
+        h(Card, { key: 'converse', title: '交流轮（回评论 / 回私信）', desc: '单独一轮：看看谁回复了你、谁发了私信，按上下文回一句 —— 不刷视频、不写日报' },
+          h(Field, { label: '开启交流轮', note: '默认关；和值班轮互不占用' },
+            h(Switch, { on: Boolean(converseOn), onChange: (v) => { setConverseOn(v); patch({ converseOn: v }, '交流轮') } })),
+          (converseOn) ? h('div', { 'data-bd-sub': '' },
+            h(Field, { label: '多久看一次', note: '分钟；默认 30' },
+              h('input', {
+                'data-bd-input': '', 'data-bd-num': '', type: 'number', min: 5, max: 1440,
+                value: converseEvery ?? '',
+                onChange: (e) => setConverseEvery(e.target.value),
+                onBlur: () => {
+                  const n = Math.max(5, Math.min(Number(converseEvery) || 30, 1440))
+                  setConverseEvery(String(n)); patch({ converseEveryMin: n }, '交流轮间隔')
+                },
+              })),
+            h(Field, { label: '每轮回几条评论', note: '0 = 不回评论' },
+              h('input', {
+                'data-bd-input': '', 'data-bd-num': '', type: 'number', min: 0, max: 10,
+                value: converseComments ?? '',
+                onChange: (e) => setConverseComments(e.target.value),
+                onBlur: () => {
+                  const n = Math.max(0, Math.min(Number(converseComments) || 0, 10))
+                  setConverseComments(String(n)); patch({ converseCommentPerRound: n }, '每轮回几条评论')
+                },
+              })),
+            h(Field, { label: '每轮回几个人私信', note: '0 = 不回私信' },
+              h('input', {
+                'data-bd-input': '', 'data-bd-num': '', type: 'number', min: 0, max: 10,
+                value: converseDms ?? '',
+                onChange: (e) => setConverseDms(e.target.value),
+                onBlur: () => {
+                  const n = Math.max(0, Math.min(Number(converseDms) || 0, 10))
+                  setConverseDms(String(n)); patch({ converseDmPerRound: n }, '每轮回几个人私信')
+                },
+              })),
+            h(Field, { label: '只回这些人的私信', note: 'B站 UID，逗号分隔；留空 = 谁都不回（除非允许陌生人）', wide: true },
+              h('input', {
+                'data-bd-input': '', value: converseDmUids ?? '',
+                placeholder: '例如：1039568856',
+                onChange: (e) => setConverseDmUids(e.target.value),
+                onBlur: () => { const v = String(converseDmUids || '').trim(); setConverseDmUids(v); patch({ converseDmUids: v }, '私信名单') },
+              })),
+            h(Field, { label: '也回陌生人', note: '关着更安全：只回名单里的人' },
+              h(Switch, { on: Boolean(converseAnyDm), onChange: (v) => { setConverseAnyDm(v); patch({ converseAnyDm: v }, '回陌生人') } })),
+            h('div', { 'data-bd-actions': '' },
+              h('button', { 'data-bd-btn': '', 'data-primary': '', disabled: busy === 'converse', onClick: onConverseRun }, '现在看一次'),
+              h('button', { 'data-bd-btn': '', 'data-quiet': '', onClick: () => loadConverse() }, '刷新排队')),
+            converseInfo
+              ? h('div', { 'data-bd-note': '' },
+                `${converseInfo.busy ? '正在回…' : '空闲'} · 已回过 ${converseInfo.repliedCount || 0} 条评论 / ${converseInfo.answeredCount || 0} 人私信`
+                + (converseInfo.lastAt ? ` · 上次 ${new Date(converseInfo.lastAt).toLocaleString('zh-CN')}` : ''))
+              : null) : null),
+
         h(Card, { key: 'asr', title: '本地转写', desc: '没字幕的视频在本机转写一遍（不花 API 钱）' },
           h(Field, { label: '转写没字幕的视频', note: '默认关' },
             h(Switch, { on: on('transcribe'), onChange: (v) => patch({ transcribe: v }, '本地转写') })),
