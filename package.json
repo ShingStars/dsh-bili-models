@@ -1,7 +1,7 @@
 {
   "name": "dsh-bili-models",
-  "version": "2.4.0",
-  "description": "刷B站（dsh-bili-scroll 的社区分支）：可选任意 DSH 已注册模型、宿主内固定会话运行、评论/私信真对话并从聊天里学习、特别关注 UP 主、自动评论与 @ 分开、每天发一条动态",
+  "version": "2.5.0",
+  "description": "刷B站（dsh-bili-scroll 的社区分支）：每一轮都在视频下留相关评论、交流轮单独一条会话回评论与私信（值班轮跑在它的子会话里）、真人感、从对话里学、自定义定时时段、每天一条动态",
   "keywords": [
     "dsh",
     "dsh-plugin",

@@ -55,8 +55,6 @@ export const Config = !z ? undefined : z.object({
   /** 峰谷子开关：中午 / 晚上 */
   noon: z.boolean().default(true).extra('volatile', true),
   night: z.boolean().default(true).extra('volatile', true),
-  /** 自动评论 @ 使用者（默认关 —— 会拿用户的号说话，必须他自己开） */
-  autoComment: z.boolean().default(false).extra('volatile', true),
   /** ⭐ 私信投递：off=只发评论（现状）· only=只私信（完全不公开评论）· both=评论 + 私信 */
   dmMode: z.string().default('off').extra('volatile', true),
   /** ⭐ 私信发给谁的 UID（数字）。要在 dmMode 不是 off 时填 */
@@ -65,11 +63,11 @@ export const Config = !z ? undefined : z.object({
   transcribe: z.boolean().default(false).extra('volatile', true),
   /** 本地转写用哪个 Whisper 模型（tiny / base / small / medium） */
   asrModel: z.string().default('small').extra('volatile', true),
-  /** ⭐ 每轮最多发几条评论（每条里 @ 一次下面那个人）；**有效范围 0–20，口径见 clampPatch**（0 = 不发评论）
+  /** ⭐ 每轮最多发几条评论；**有效范围 0–20，口径见 clampPatch**（2.5.0 起 0 = 不设上限，每条挑中的都评）
    *  ⚠️ 这里故意**不加 `.max(20)`**：schema 校验不过 ⇒ cordis 拒收这条 entry ⇒ **整条插件不激活** ✗
    *     （跟 schemastery 拿不到时的降级同一个道理）—— 范围一律由 clampPatch 在**写**和**读**两头钳。 */
   commentPerRound: z.natural().default(1).extra('volatile', true),
-  /** ⭐ 要 @ 谁（B站 昵称）；**留空 = 不发评论** —— 评论存在的意义就是 @ 那一下 */
+  /** 要 @ 谁（B站 昵称）；**留空 = 不 @** —— 2.5.0 起评论与 @ 彻底分开，评论不再要求填名单 */
   mentionName: z.string().default('').extra('volatile', true),
   /** 关注关键词（空了用章程里默认那几组） */
   keywords: z.array(z.string()).default([]).extra('volatile', true),
@@ -85,10 +83,10 @@ export const Config = !z ? undefined : z.object({
   workspace: z.string().default('').extra('volatile', true),
   /** 日报形态：full=完整（现状）· brief=每条一两行 · off=不写报告（只发评论） */
   reportLevel: z.string().default('full').extra('volatile', true),
-  /** 回复评论：默认关。开了之后只回「直接回复到它那条评论下面的人」 */
-  replyToComments: z.boolean().default(false).extra('volatile', true),
-  /** 每轮最多回几条 */
-  replyPerRound: z.number().default(1).extra('volatile', true),
+  /* ⭐ 2.5.0 删掉的两个键（用户 2026-10-20 的 Q11）：
+   *    replyToComments / replyPerRound —— 值班轮里"顺手回一句"与交流轮完全重叠，
+   *    而且两边都能回 ⇒ 同一楼被回两遍。现在回复只走交流轮。
+   *    老配置文件里还留着这两个键，读的时候静默忽略（normalize 只认 DEFAULTS 里的键）。 */
   /* ⭐ 本版新增：值班那一轮用哪个模型。
    *    默认留空 = 不动 profile 的默认模型；用户选了一个能跑通的，才会写进 overlay。
    *    ⚠️ 老版本这里默认 qodercn/qfmodel —— 那会强制每一轮都去挂外部模型，
@@ -274,9 +272,9 @@ export function apply(ctx, config) {
    *     ② **定时器回调里绝不让异常外冒**（见 tick）—— 未捕获异常会杀掉整个宿主进程。
    */
   const DEFAULTS = {
-    perDay: 5, peakValley: false, noon: true, night: true, autoComment: false, transcribe: false, asrModel: 'small',
+    perDay: 5, peakValley: false, noon: true, night: true, transcribe: false, asrModel: 'small',
     dmMode: 'off', dmUid: 0,
-    keywords: [], commentPerRound: 1, mentionName: '', pythonPath: 'python', dshBin: '', headlessProfile: 'headless', overlayMcp: true, workspace: '', reportLevel: 'full', replyToComments: false, replyPerRound: 1,
+    keywords: [], commentPerRound: 1, mentionName: '', pythonPath: 'python', dshBin: '', headlessProfile: 'headless', overlayMcp: true, workspace: '', reportLevel: 'full',
     modelProvider: '', modelName: '', modelEffort: '', bridgePlugins: 'dsh-our-free-model',
     // 2.1.0
     runMode: 'in-host', sessionId: '', permissionPreset: 'workspace-write',
@@ -319,8 +317,6 @@ export function apply(ctx, config) {
     const p = { ...patch }
     if ('perDay' in p) p.perDay = Math.max(0, Math.min(Number(p.perDay) || 0, 50))
     if ('reportLevel' in p) p.reportLevel = ['full', 'brief', 'off'].includes(String(p.reportLevel)) ? String(p.reportLevel) : 'full'
-    if ('replyToComments' in p) p.replyToComments = Boolean(p.replyToComments)
-    if ('replyPerRound' in p) p.replyPerRound = Math.max(1, Math.min(Number(p.replyPerRound) || 1, 10))
     if ('commentPerRound' in p) p.commentPerRound = Math.max(0, Math.min(Number(p.commentPerRound) || 0, 20))
     // 2.1.0
     if ('runMode' in p) p.runMode = String(p.runMode) === 'headless' ? 'headless' : 'in-host'
@@ -524,7 +520,7 @@ export function apply(ctx, config) {
     if (Array.isArray(raw._set)) return new Set(raw._set)
     return new Set(Object.keys(DEFAULTS).filter((k) => k in raw && JSON.stringify(raw[k]) !== JSON.stringify(DEFAULTS[k])))
   })()
-  const CFG_SIG = ['perDay', 'mentionName', 'replyToComments', 'overlayMcp']   // 靠这几个键认出"哪一行是我们"
+  const CFG_SIG = ['perDay', 'mentionName', 'commentPerRound', 'overlayMcp']   // 靠这几个键认出"哪一行是我们"
   let settingsRow = { at: 0, row: null }
   /**
    * ⚠️ 2026-10-20（v1.0.1 用户崩溃的真凶，上游 0.1.11 同样存在）：
@@ -716,10 +712,82 @@ export function apply(ctx, config) {
     try { return JSON.parse(JSON.stringify(v)) } catch { return String(v) }
   }
 
+  /* ⭐ 2.5.0（用户 2026-10-20 的 Q15）：**按轮次收窄工具**。
+   *   值班轮（刷视频）与交流轮（回评论/私信）是两个会话（父子），但共用同一个插件进程，
+   *   所以闸只能放在工具层：给错轮次只会让模型做错事 —— 值班轮跑去回私信、交流轮跑去搜新视频。
+   *   activeRound === 'idle' 时（人直接在对话里调）放行全部，不打扰手动使用。 */
+  let activeRound = 'idle'
+  const ROUND_TOOLS = {
+    duty: new Set(['bili_whoami', 'bili_status', 'bili_search', 'bili_subtitle', 'bili_comments',
+      'bili_video_info', 'bili_reply', 'bili_send_message', 'bili_post_dynamic', 'bili_watch_check', 'bili_learn']),
+    converse: new Set(['bili_whoami', 'bili_status', 'bili_comment_replies', 'bili_dm_sessions',
+      'bili_dm_history', 'bili_reply', 'bili_send_message', 'bili_learn']),
+  }
+  const toolAllowed = (name) => {
+    if (activeRound === 'idle') return true
+    const allow = ROUND_TOOLS[activeRound]
+    return allow ? allow.has(name) : true
+  }
+
+  /* ⭐ 2.5.0（用户 Q10）：按目标互斥 —— 同一个 rpid / 同一个 UID 同时只允许一条在飞。
+   *   并发的是两个会话（值班轮 + 交流轮），全局锁会把它们互相卡死；按目标锁只挡真正会撞的那些。 */
+  const inflight = new Map()
+  const withTargetLock = async (key, fn) => {
+    if (inflight.has(key)) {
+      return { ok: false, blocked: true, error: `同一目标上一条还在发（${key}）—— 等它回来再发，别连发` }
+    }
+    inflight.set(key, Date.now())
+    try { return await fn() } finally { inflight.delete(key) }
+  }
+
+  /* ⭐ 2.5.0（用户 Q14）：父子两个会话**消息流不共享** ⇒ 交流轮要接住"你刚在哪个视频下说了什么"，
+   *   只能由宿主把事实摘要塞进提示词。这里顺手记一份"今天说过的话"。 */
+  const activityFile = join(stateDir, 'activity.json')
+  const noteActivity = (entry) => {
+    try {
+      const st = readJson(activityFile, { items: [] })
+      const items = Array.isArray(st.items) ? st.items : []
+      items.push({ ts: Date.now(), ...entry })
+      const cut = Date.now() - 3 * 24 * 3600_000            // 只留最近 3 天
+      const kept = items.filter((x) => Number(x?.ts || 0) >= cut).slice(-200)
+      writeJson(activityFile, { items: kept })
+    } catch { /* 少一条记录不至于让一轮跑不成 */ }
+  }
+  const activityDigest = (max = 800) => {
+    try {
+      const items = (readJson(activityFile, { items: [] }).items || []).filter((x) => x && x.ts)
+      if (!items.length) return ''
+      const lines = []
+      let used = 0
+      for (const it of items.slice().reverse()) {
+        const when = new Date(Number(it.ts)).toISOString().slice(5, 16).replace('T', ' ')
+        const what = it.kind === 'dm'
+          ? `私信给 UID ${it.uid}：${String(it.text || '').slice(0, 70)}`
+          : `${it.rpid ? `回复 rpid ${it.rpid}` : '评论'} ${it.bvid}：${String(it.text || '').slice(0, 70)}`
+        const line = `- ${when} ${what}`
+        if (used + line.length > max) break
+        lines.push(line)
+        used += line.length + 1
+      }
+      return lines.length
+        ? `\n【本账号最近说过的话（宿主记录，用来接上下文；不是你这一轮要复述的内容）】\n${lines.join('\n')}\n`
+        : ''
+    } catch { return '' }
+  }
+
   const tool = (spec) => ctx.tools.register(defineTool({
     ...spec,
     output: textOutput,
-    async execute(args, exec) { return safe(await spec.execute(args, exec)) },
+    async execute(args, exec) {
+      if (!toolAllowed(spec.name)) {
+        return safe({
+          ok: false,
+          blocked: true,
+          error: `工具 ${spec.name} 不属于当前这一轮（${activeRound}）；这一轮用得到的是：${[...(ROUND_TOOLS[activeRound] || [])].join(', ')}`,
+        })
+      }
+      return safe(await spec.execute(args, exec))
+    },
   }))
 
   tool({
@@ -776,25 +844,22 @@ export function apply(ctx, config) {
   tool({
     name: 'bili_reply',
     description: '在视频下发评论（或回复某条评论）。这就是"@ 本人"那一下：短、干净、纯文本 @ 写在正文里。\n'
-      + '🔴 安全闸：设置页的「自动评论并 @ 你」**默认是关的**；关着的时候这个工具会拒绝 —— '
-      + '除非本人当场让你发（那时传 force: true）。',
+      + '🔴 唯一的安全闸是「只私信」模式（dmMode=only）：那时不让发公开评论 —— 除非本人当场让你发（传 force: true）。\n'
+      + '⚠️ 同一个 rpid / 同一个视频同一时刻只允许一条在发（宿主会挡住并告诉你"上一条还在发"）。',
     parameters: {
       bvid: { type: 'string', description: 'BV号' },
       text: { type: 'string', description: '评论正文（短、干净、纯文本 @；别写敏感词）' },
       rpid: { type: 'number', description: '要回复的评论 id（0/不填 = 发新评论）' },
-      force: { type: 'boolean', description: '本人当场让你发的，传 true 越过"自动评论关着"的闸' },
+      force: { type: 'boolean', description: '本人当场让你发的，传 true 越过「只私信」模式那道闸' },
     },
     async execute(args) {
-      // dmMode==='only' 时本轮根本不该发公开评论 —— 在工具层也一并挡掉（除非当场 force）
-      // ⭐ 2.4.0：评论与 @ 拆开后，这条闸**不再要求填名单**（名单只决定要不要 @）
-      const commentOn = Boolean(cfg.autoComment && cfg.dmMode !== 'only')
-      if (!commentOn && !args.force) {
+      // ⭐ 2.5.0：评论不再是开关 —— 「挑中一条就点评一条」是值班轮的规定动作（用户 Q1）。
+      //    唯一的例外是「只私信」模式：那时一条公开评论都不该发。
+      if (cfg.dmMode === 'only' && !args.force) {
         return {
           ok: false,
           blocked: true,
-          hint: cfg.dmMode === 'only'
-            ? '现在是「只私信」模式（dmMode=only）—— 规定不发公开评论，改成用 bili_send_message 私信。确实要发时传 force: true。'
-            : '要发评论得先打开「自动评论」。或者本人当场让你发时传 force: true。',
+          hint: '现在是「只私信」模式（dmMode=only）—— 规定不发公开评论，改成用 bili_send_message 私信。确实要发时传 force: true。',
         }
       }
       // ⭐ 2.4.0：@ 是独立开关。关着就把正文里的 @"昵称" 剥掉 ——
@@ -810,10 +875,15 @@ export function apply(ctx, config) {
         if (stripped !== text.trim()) log('评论里的 @ 被剥掉了（mentionOn 关着）')
         text = stripped
       }
-      return call('bili_reply', {
-        bvid: String(args.bvid ?? ''),
-        text,
-        rpid: Number(args.rpid) || 0,
+      const bvid = String(args.bvid ?? '')
+      const rpid = Number(args.rpid) || 0
+      // ⭐ 2.5.0：按目标互斥（用户 Q10）—— 值班轮与交流轮可能同时动手，
+      //    同一个 rpid 或同一个视频同一时刻只放一条过去，避免同一楼回两遍。
+      const lockKey = rpid ? `reply:${rpid}` : `comment:${bvid}`
+      return withTargetLock(lockKey, async () => {
+        const r = await call('bili_reply', { bvid, text, rpid })
+        noteActivity({ kind: rpid ? 'reply' : 'comment', bvid, rpid, text: text.slice(0, 200) })
+        return r
       })
     },
   })
@@ -831,7 +901,13 @@ export function apply(ctx, config) {
       if (!uid) return { ok: false, error: 'receiver_uid 必须是数字 UID（对方空间地址里那串数字）' }
       const text = String(args.text ?? '')
       if (!text.trim()) return { ok: false, error: '私信正文不能为空' }
-      return call('bili_send_message', { receiver_uid: uid, text: text.slice(0, 500) })
+      // ⭐ 2.5.0：同一个人同一时刻只放一条过去 —— 值班轮投递日报、交流轮回私信，
+      //    两边撞上会变成"给同一个人连发两条"（用户 Q10）。
+      return withTargetLock(`dm:${uid}`, async () => {
+        const r = await call('bili_send_message', { receiver_uid: uid, text: text.slice(0, 500) })
+        noteActivity({ kind: 'dm', uid, text: text.slice(0, 200) })
+        return r
+      })
     },
   })
 
@@ -945,7 +1021,7 @@ export function apply(ctx, config) {
           opening: inWindow(now, w),
         }])),
         peakValley: cfg.peakValley,
-        autoComment: cfg.autoComment,
+        autoComment: cfg.dmMode === 'only' ? false : true,   // 2.5.0：评论是规定动作（保留字段名给老前端兜底），只有"只私信"模式才是 false
         dmMode: cfg.dmMode,
         dmUid: Number(cfg.dmUid) || 0,
         transcribe: cfg.transcribe,
@@ -1007,7 +1083,7 @@ export function apply(ctx, config) {
   tool({
     name: 'bili_config',
     description: '读 / 改「刷B站」的设置。不给 `patch` 就是读；给了就改（只认 schema 里的字段）。\n'
-      + '例：`{"perDay":5,"peakValley":true,"noon":true,"night":true,"autoComment":false,"transcribe":false,"keywords":["DeepSeek Harness"]}`；'
+      + '例：`{"perDay":5,"peakValley":true,"noon":true,"night":true,"transcribe":false,"keywords":["DeepSeek Harness"]}`；'
       + '私信投递：`{"dmMode":"only","dmUid":12345678}`（dmMode = off / only / both）；'
       + '多人：`{"dmUids":"123,456","mentionNames":"甲,乙"}`；'
       + '特别关注：`{"watchUids":"123,456","watchNotify":"dm","watchEveryMin":15}`（watchNotify = off / dm / comment / both）；'
@@ -1350,8 +1426,9 @@ export function apply(ctx, config) {
     const mentions = mentionTargets()
     const dms = dmTargets()
     const watches = watchTargets()
-    //    ⭐ 2.4.0：**评论**与 **@** 拆成两个开关 —— 评论不需要名单，@ 才是可选的加菜
-    const commentOn = Boolean(cfg.autoComment && cfg.dmMode !== 'only')
+    //    ⭐ 2.5.0：**评论成了值班轮的规定动作**（用户 Q1）—— 不再有 autoComment 开关；
+    //       唯一例外是「只私信」模式（dmMode=only）。
+    const commentOn = Boolean(cfg.dmMode !== 'only')
     const mentionOn = Boolean(commentOn && cfg.mentionOn && mentions.length)
     const dmOn = Boolean(cfg.dmMode !== 'off' && dms.length > 0)
     return `你是这个账号的 B站 助手。`
@@ -1384,11 +1461,9 @@ export function apply(ctx, config) {
       + ` —— 一行一条：日期 · BV 号 · 标题 · UP · 一句话结论 · 链接（跳过的那条在后面注明理由）；`
       + `这是**给以后检索用**的（报告是给人看的，归档是给"回头翻"用的），别省略、也别只写挑中的。`
       + `自动评论是${commentOn
-        ? `开着的（⭐ **每挑中一条视频，就在它下面留一条评论**${Number(cfg.commentPerRound) > 0 ? `，这一轮最多 ${cfg.commentPerRound} 条` : '，不设条数上限'}；`
+        ? `**规定动作**（⭐ **每挑中一条视频，就在它下面留一条评论**${Number(cfg.commentPerRound) > 0 ? `，这一轮最多 ${cfg.commentPerRound} 条` : '，不设条数上限'}；`
           + `每条 ${cfg.humanize ? '10–40 字' : '150 字内'}，说的是**这条视频里的具体东西**，别写通用夸奖）`
-        : (cfg.dmMode === 'only'
-          ? '关着的 —— 当前是「**只私信**」模式：**这一轮一条公开评论都不许发**，改走私信'
-          : '关着的（只写报告，别发评论）')}。`
+        : '关着的 —— 当前是「**只私信**」模式：**这一轮一条公开评论都不许发**，改走私信'}。`
       + `在评论里 @ 人是${mentionOn
         ? `**开着的**：每条评论正文里用纯文本 @ 一次这些昵称 —— ${mentions.join('、')}（@ 一次就够，别圈一串）`
         : (cfg.mentionOn && !mentions.length
@@ -1413,11 +1488,11 @@ export function apply(ctx, config) {
           + `⚠️ 私信里**不要**写"本鱼 / 本鲸 / 主人 / 人家"那套；⚠️ 发完把"已私信"记进报告（**报告里**可以写口径）。`
           + (cfg.dmMode === 'both' ? `⚠️ 现在是 **both**：公开评论照发（走下面那一整套规矩），私信**另外**再发一条。` : '')
         : '')
-      + (cfg.replyToComments
-        ? (cfg.converseOn
-          ? `回复评论：这件事交给**交流轮**专门处理（它有自己的节奏和配额）—— 这一轮**一条回复都不要发**，免得同一楼被回两遍。`
-          : `回复评论：开着（每轮最多回 ${Number(cfg.replyPerRound) || 1} 条）—— 只回「直接回复到你那条评论下面的人」，回完记进报告；找不到你那条评论就跳过，别硬找。`)
-        : `回复评论：关着（一个字都不要回任何人 —— 有人回复你那条评论也不要理）。`)
+      // ⭐ 2.5.0：回复评论这件事**整个交给交流轮**（用户 Q2）—— 值班轮一条回复都不发，
+      //    免得同一楼被回两遍；交流轮没开就明说"没人回你也不管"，别让模型自己找补。
+      + (cfg.converseOn
+        ? `回复评论：这件事**只由交流轮**处理（它单开一轮、有自己的节奏和配额）—— 这一轮**一条回复都不要发**。`
+        : `回复评论：**交流轮关着** ⇒ 这一轮一条回复都不发（要回评论请在设置里打开交流轮）。`)
       + humanizeBlock('comment')
       + (cfg.dailyPostOn
         ? `\n⭐⭐ **发一条动态**：报告写完之后，用 \`bili_post_dynamic\` 发**一条**动态（正文一次调用就够），`
@@ -1445,12 +1520,12 @@ export function apply(ctx, config) {
    */
   const mcpWhitelist = () => {
     const list = ['bili_search', 'bili_subtitle', 'bili_comments', 'bili_video_info']
-    if (cfg.autoComment || cfg.replyToComments) list.push('bili_reply')   // 只有真要发评论才给这只
+    if (cfg.dmMode !== 'only') list.push('bili_reply')   // 2.5.0：评论是规定动作，"只私信"模式才不给
     // ⭐ 合并版补（原 0.1.9 的修复，上游 0.1.11 还没有）：
     //    投递方式和回评论各自要一只工具，漏了的话那一轮想发私信 / 想看谁回了你，
     //    手上根本没有对应工具，agent 只能绕过去直连接口。
     if ((cfg.dmMode && cfg.dmMode !== 'off') || dmTargets().length) list.push('bili_send_message')
-    if (cfg.replyToComments || cfg.converseOn) list.push('bili_received_replies')
+    if (cfg.converseOn) list.push('bili_received_replies')
     // 2.3.0 对话轮要读：评论回复（整理过的）+ 私信会话 + 私信往来
     if (cfg.converseOn) list.push('bili_comment_replies', 'bili_dm_sessions', 'bili_dm_history')
     // 2.4.0 每天发一条动态
@@ -1739,6 +1814,51 @@ export function apply(ctx, config) {
     return id
   }
 
+  /* ⭐ 2.5.0（用户 Q12）：交流轮是自己的会话（父），值班轮是它的子代理。
+   *    - 值班轮沿用老的 dutySessionId（那里面本来就是"刷视频"的历史）
+   *    - 交流轮新起一条 converseSessionId（从零开始，不背刷视频的上下文） */
+  const CONVERSE_SESSION_KEY = 'converseSessionId'
+  const converseSessionId = () => {
+    const st = readJson(dutyStateFile, {})
+    if (st[CONVERSE_SESSION_KEY]) return String(st[CONVERSE_SESSION_KEY])
+    const id = `session-${randomUUID()}`
+    bumpState({ [CONVERSE_SESSION_KEY]: id })
+    log(`交流轮会话（父）新建 id：${id}`)
+    return id
+  }
+
+  /** 把交流轮那条会话的 agent 弄活（活着就直接拿）；值班轮拿它当父。失败返回 null，值班轮按无父跑。 */
+  const ensureConverseParent = async () => {
+    const agents = hostSvc('agents')
+    if (!agents) return null
+    const cid = converseSessionId()
+    const live = agents.get?.(cid)
+    if (live) return live
+    const composition = await composeDutyAgent()
+    const opts = agentOptionsFor()
+    const setup = composition.setup
+    try {
+      const h = await agents.resume({ resumeSessionId: cid, ...(opts ? { agentOptions: opts } : {}), ...(setup ? { setup } : {}) })
+      log(`交流轮会话（父）沿用了 ${cid}`)
+      return h?.agent ?? h
+    } catch (e) {
+      try {
+        const h = await agents.create({
+          sessionId: cid,
+          ...(opts ? { agentOptions: opts } : {}),
+          meta: { cwd: stateDir, ...(composition.agentPreset ? { agentPreset: composition.agentPreset } : {}) },
+          ...(setup ? { setup } : {}),
+        })
+        log(`交流轮会话（父）新建了 ${cid}`)
+        try { hostSvc('sessionTitle')?.rename?.(h?.agent?.session ?? h?.session, '刷B站·交流轮') } catch { /* 标题不是必需的 */ }
+        return h?.agent ?? h
+      } catch (e2) {
+        log(`交流轮会话（父）建不起来（值班轮这次按无父跑）：${String(e2?.message ?? e2).slice(0, 160)}`)
+        return null
+      }
+    }
+  }
+
   /** 拿宿主服务（拿不到就 undefined，绝不抛） */
   const hostSvc = (name) => {
     try { const v = ctx.reflect?.get?.(name); if (v !== undefined) return v } catch { /* 不注入就读不到 */ }
@@ -1797,21 +1917,27 @@ export function apply(ctx, config) {
       if (!isConverse) { try { stubReportIfMissing(1) } catch { /* 补不上也把话说清楚 */ } }
       return { started: false, why, mode: 'in-host', error: msg }
     }
-    const sessionId = dutySessionId()
+    const sessionId = isConverse ? converseSessionId() : dutySessionId()
     const text = round.text || promptFor()
     const t0 = Date.now()
     let agent = null
+    // ⭐ 2.5.0（用户 Q13）：**值班轮是交流轮的子代理** —— 父会话常驻、随时能回，
+    //    子代理去刷视频（几分钟），两边各自有自己的 loop ⇒ 真的并发，不是排队。
+    //    父拿不到就退化成"无父"跑（功能不受影响，只是会话列表里看不到父子关系）。
+    let parentAgent = null
+    if (!isConverse) parentAgent = await ensureConverseParent().catch(() => null)
+    activeRound = isConverse ? 'converse' : 'duty'
     try {
       agent = agents.get?.(sessionId) || null
       if (!agent) {
         const composition = await composeDutyAgent()
         const opts = agentOptionsFor()
         const setup = composition.setup
-        log(`${tag}开跑（${why}，宿主内会话 ${sessionId}${composition.agentPreset ? `，preset=${composition.agentPreset}` : ''}${opts ? `，模型=${opts.provider}/${opts.model}` : ''}）`)
+        log(`${tag}开跑（${why}，宿主内会话 ${sessionId}${composition.agentPreset ? `，preset=${composition.agentPreset}` : ''}${opts ? `，模型=${opts.provider}/${opts.model}` : ''}${parentAgent ? `，父会话 ${converseSessionId()}` : ''}）`)
         // 先试「沿用这条持久化会话」，没有就新建一条（都是同一条会话 id，不会另开）
         let handle = null
         try {
-          handle = await agents.resume({ resumeSessionId: sessionId, ...(opts ? { agentOptions: opts } : {}), ...(setup ? { setup } : {}) })
+          handle = await agents.resume({ resumeSessionId: sessionId, ...(opts ? { agentOptions: opts } : {}), ...(setup ? { setup } : {}), ...(parentAgent ? { parentAgent } : {}) })
           log(`沿用已有会话 ${sessionId}`)
         } catch (e) {
           log(`没有可沿用的会话（${String(e?.message ?? e).slice(0, 140)}）⇒ 新建一条`)
@@ -1820,9 +1946,15 @@ export function apply(ctx, config) {
             ...(opts ? { agentOptions: opts } : {}),
             meta: { cwd: stateDir, ...(composition.agentPreset ? { agentPreset: composition.agentPreset } : {}) },
             ...(setup ? { setup } : {}),
+            ...(parentAgent ? { parentAgent } : {}),
           })
         }
         agent = handle?.agent ?? handle
+        // 钉标题，让它在会话列表里一眼认得出（2.5.0）
+        try {
+          const t = isConverse ? '刷B站·交流轮' : '刷B站·值班轮'
+          hostSvc('sessionTitle')?.rename?.(agent?.session, t)
+        } catch { /* 拿不到 titles 服务就算了，不影响跑 */ }
       }
       if (!agent) throw new Error('拿不到 agent 句柄')
       // 无人值守：审批一律拒绝（官方 automation 也是这么钉的：presets.set + approval never）
@@ -1993,6 +2125,9 @@ export function apply(ctx, config) {
       log(`${tag}失败（${why}，宿主内）：${e?.stack ?? e}`)
       if (!isConverse) { try { stubReportIfMissing(1) } catch { /* 补不上也不影响日志 */ } }
       return { started: false, why, mode: 'in-host', sessionId, error: String(e?.message ?? e) }
+    } finally {
+      // 2.5.0：轮次闸只在"这一轮跑着的时候"有效，跑完立刻放开，免得影响人在对话里手动调工具
+      activeRound = 'idle'
     }
   }
 
@@ -2117,6 +2252,9 @@ export function apply(ctx, config) {
     s += '· 不要复读对方原话，不要「赞同 + 补充」那套模板，不要客套收尾（「希望对你有帮助」）。\n'
     s += '· 对方语气冲，也不用卑躬屈膝；正常还一句就行。\n'
     s += humanizeBlock('comment')
+    // ⭐ 2.5.0（用户 Q14）：值班轮与交流轮是父子两个会话，消息流不共享 ——
+    //    这里把"这个号最近说过什么"作为事实摘要塞进来，让聊天接得上上下文。
+    s += activityDigest(800)
     // ⭐ 2.4.0：让这一轮有机会把「聊出来的东西」留下来
     if (cfg.learnOn) {
       s += '\n===== 从这一段对话里学（可选，但很有用）=====\n'
@@ -2585,7 +2723,7 @@ export function apply(ctx, config) {
       })(),
       voice: { humanize: Boolean(cfg.humanize), style: String(cfg.voiceStyle || 'auto'), name: (() => { try { return pickVoice().name } catch { return '' } })() },
       // ── 2.4.0：@ 单独开关 / 学到的 / 今天发过动态没有 ──
-      mention: { on: Boolean(cfg.mentionOn), commentOn: (() => { try { return Boolean(cfg.autoComment && cfg.dmMode !== 'only') } catch { return false } })(), targets: (() => { try { return mentionTargets() } catch { return [] } })() },
+      mention: { on: Boolean(cfg.mentionOn), commentOn: (() => { try { return cfg.dmMode !== 'only' } catch { return true } })(), targets: (() => { try { return mentionTargets() } catch { return [] } })() },
       learn: (() => {
         let s = { lessons: [] }
         try { s = readLearn() } catch { /* 读不到就当空 */ }
@@ -2609,7 +2747,16 @@ export function apply(ctx, config) {
           answeredCount: Object.keys(st2.answeredDmTs || {}).length,
           lastAt: converseLastAt || 0,
           busy: converseBusy,
+          sessionId: (() => { try { return converseSessionId() } catch { return '' } })(),
+          parentOf: (() => { try { return dutySessionId() } catch { return '' } })(),
         }
+      })(),
+      // ⭐ 2.5.0：现在哪一轮在跑（值班轮/交流轮/空闲）+ 最近说过什么（摘要来源）
+      round: String(activeRound || 'idle'),
+      activity: (() => {
+        try {
+          return readJson(activityFile, []).slice(-5).map((a) => ({ at: a.at, kind: a.kind, text: a.text }))
+        } catch { return [] }
       })(),
     }
   }
@@ -2692,9 +2839,9 @@ export function apply(ctx, config) {
     if (req.method === 'POST' && path === '/api/bili-duty/config') {
       const body = await readBody(req)
       const patch = {}
-      for (const k of ['perDay', 'peakValley', 'noon', 'night', 'autoComment', 'transcribe', 'asrModel',
+      for (const k of ['perDay', 'peakValley', 'noon', 'night', 'transcribe', 'asrModel',
         'commentPerRound', 'mentionName', 'dmMode', 'dmUid',
-        'keywords', 'pythonPath', 'dshBin', 'headlessProfile', 'workspace', 'reportLevel', 'replyToComments', 'replyPerRound',
+        'keywords', 'pythonPath', 'dshBin', 'headlessProfile', 'workspace', 'reportLevel',
         'modelProvider', 'modelName', 'modelEffort', 'bridgePlugins',
         // 2.1.0
         'runMode', 'sessionId', 'permissionPreset', 'dmUids', 'mentionNames',

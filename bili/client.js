@@ -276,7 +276,6 @@ select[data-bd-input]{cursor:pointer;}
       const [rl, setRl] = React.useState(null)
       const [perDay, setPerDay] = React.useState(null)
       const [perRound, setPerRound] = React.useState(null)
-      const [replyPer, setReplyPer] = React.useState(null)
       const [dmUid, setDmUid] = React.useState(null)
       const [dmMode, setDmMode] = React.useState(null)
       const [mention, setMention] = React.useState(null)
@@ -338,7 +337,6 @@ select[data-bd-input]{cursor:pointer;}
         if (rl === null) setRl(cfg.reportLevel || 'full')
         if (perDay === null) setPerDay(String(cfg.perDay ?? 5))
         if (perRound === null) setPerRound(String(cfg.commentPerRound ?? 1))
-        if (replyPer === null) setReplyPer(String(cfg.replyPerRound ?? 1))
         if (mention === null) setMention(cfg.mentionName || '')
         if (dmUid === null) setDmUid(cfg.dmUid ? String(cfg.dmUid) : '')
         if (dmMode === null) setDmMode(cfg.dmMode || 'off')
@@ -709,23 +707,21 @@ select[data-bd-input]{cursor:pointer;}
 
       /* ────────────────────────── 发言 ────────────────────────── */
       const paneSpeak = () => [
-        h(Card, { key: 'comment', title: '自动评论', desc: '在挑中的视频下面留一条评论，并 @ 你填的人' },
-          h(Field, { label: '自动评论并 @', note: '默认关' },
-            h(Switch, { on: on('autoComment'), onChange: (v) => patch({ autoComment: v }, '自动评论') })),
-          on('autoComment') ? h('div', { 'data-bd-sub': '' },
-            h(Field, { label: '每轮最多发几条', note: '0 = 每条挑中的都评论（不设上限）' },
-              h('input', {
-                'data-bd-input': '', 'data-bd-num': '', type: 'number', min: 0, max: 20,
-                value: perRound ?? '',
-                onChange: (e) => setPerRound(e.target.value),
-                onBlur: () => {
-                  const n = Math.max(0, Math.min(Number(perRound) || 0, 20))
-                  setPerRound(String(n)); patch({ commentPerRound: n }, '每轮几条评论')
-                },
-              })),
-            h(Field, { label: '评论里 @ 人', note: '和「评论」分开：关着就只发正文，不 @ 任何人' },
-              h(Switch, { on: on('mentionOn'), onChange: (v) => patch({ mentionOn: v }, '@ 开关') })),
-            on('mentionOn') ? h(Field, { label: '要 @ 谁', note: '可多人，逗号分隔', wide: true },
+        h(Card, { key: 'comment', title: '自动评论', desc: '每挑中一条视频，就在它下面留一条跟内容相关的评论；@ 是单独开关' },
+          h(Field, { label: '每轮最多发几条', note: '0 = 每条挑中的都评论（不设上限）' },
+            h('input', {
+              'data-bd-input': '', 'data-bd-num': '', type: 'number', min: 0, max: 20,
+              value: perRound ?? '',
+              onChange: (e) => setPerRound(e.target.value),
+              onBlur: () => {
+                const n = Math.max(0, Math.min(Number(perRound) || 0, 20))
+                setPerRound(String(n)); patch({ commentPerRound: n }, '每轮几条评论')
+              },
+            })),
+          h(Field, { label: '评论里 @ 人', note: '和「评论」分开：关着就只发正文，不 @ 任何人' },
+            h(Switch, { on: on('mentionOn'), onChange: (v) => patch({ mentionOn: v }, '@ 开关') })),
+          on('mentionOn') ? h('div', { 'data-bd-sub': '' },
+            h(Field, { label: '要 @ 谁', note: '可多人，逗号分隔', wide: true },
               h('input', {
                 'data-bd-input': '', value: mentionNames ?? '',
                 placeholder: '例如：小明, 小红（B站 昵称）',
@@ -736,10 +732,11 @@ select[data-bd-input]{cursor:pointer;}
                   setMentionNames(v); setMention(first)
                   patch({ mentionNames: v, mentionName: first }, '要 @ 谁')
                 },
-              })) : null,
-            on('mentionOn') && !String(mentionNames || '').trim()
+              })),
+            !String(mentionNames || '').trim()
               ? h('div', { 'data-bd-note': '' }, '这轮会想 @ 但名单还空着 —— 不会 @ 任何人（也不会自己编昵称）')
-              : null) : null),
+              : null) : null,
+          h('div', { 'data-bd-note': '' }, '回复别人的评论、回私信不在这里 —— 那是「交流轮」的活（单独一轮，见「交流轮」卡）。这样刷视频的时候也能回消息。')),
         /* ⭐ 2.4.0：每天发一条动态 */
         h(Card, { key: 'dynamic', title: '每天发一条动态', desc: '把今天刷到了什么、说了什么，用第一人称发一条 B站 动态（一天只发一条）' },
           h(Field, { label: '开启', note: '默认关；刷完那一轮末尾自己发' },
@@ -792,19 +789,7 @@ select[data-bd-input]{cursor:pointer;}
           (dmMode && dmMode !== 'off')
             ? h('div', { 'data-bd-note': '' }, '每个收件人各发一条（不是一轮只发一条）。建议先互关 —— B站 对陌生人私信会限流。')
             : null),
-        h(Card, { key: 'reply', title: '回复评论' },
-          h(Field, { label: '回复楼中楼', note: '只回直接回复在你那条评论下面的人' },
-            h(Switch, { on: on('replyToComments'), onChange: (v) => patch({ replyToComments: v }, '回复评论') })),
-          on('replyToComments') ? h(Field, { label: '每轮最多回几条' },
-            h('input', {
-              'data-bd-input': '', 'data-bd-num': '', type: 'number', min: 1, max: 10,
-              value: replyPer ?? '',
-              onChange: (e) => setReplyPer(e.target.value),
-              onBlur: () => {
-                const n = Math.max(1, Math.min(Number(replyPer) || 1, 10))
-                setReplyPer(String(n)); patch({ replyPerRound: n }, '每轮几条回复')
-              },
-            })) : null),
+        /* ⭐ 2.5.0：回复评论/私信整体搬进「交流轮」，这里不再有单独的回复开关 */
         /* ⭐ 2.3.0：像真人一样说话 */
         h(Card, { key: 'voice', title: '像真人一样说话', desc: '把发言压短、去掉客套和模板腔 —— 短、具体、一次只说一件事' },
           h(Field, { label: '真人感', note: '默认开；关掉就回到"150 字内、可以分点"的写法' },
@@ -832,8 +817,8 @@ select[data-bd-input]{cursor:pointer;}
             h('div', { 'data-bd-note': '' }, `这一轮口吻：${(st.voice && st.voice.name) || '（自动）'}`)) : null),
 
         /* ⭐ 2.3.0：交流轮（评论楼中楼 + 私信往来） */
-        h(Card, { key: 'converse', title: '交流轮（回评论 / 回私信）', desc: '单独一轮：看看谁回复了你、谁发了私信，按上下文回一句 —— 不刷视频、不写日报' },
-          h(Field, { label: '开启交流轮', note: '默认关；和值班轮互不占用' },
+        h(Card, { key: 'converse', title: '交流轮（回评论 / 回私信）', desc: '单独一条会话，专门回消息：看谁回复了你、谁发了私信，按上下文回一句 —— 不刷视频、不写日报' },
+          h(Field, { label: '开启交流轮', note: '默认关；开启后值班轮跑在它的子会话里，刷视频的同时也能回消息' },
             h(Switch, { on: Boolean(converseOn), onChange: (v) => { setConverseOn(v); patch({ converseOn: v }, '交流轮') } })),
           (converseOn) ? h('div', { 'data-bd-sub': '' },
             h(Field, { label: '多久看一次', note: '分钟；默认 30' },
@@ -882,6 +867,9 @@ select[data-bd-input]{cursor:pointer;}
               ? h('div', { 'data-bd-note': '' },
                 `${converseInfo.busy ? '正在回…' : '空闲'} · 已回过 ${converseInfo.repliedCount || 0} 条评论 / ${converseInfo.answeredCount || 0} 人私信`
                 + (converseInfo.lastAt ? ` · 上次 ${new Date(converseInfo.lastAt).toLocaleString('zh-CN')}` : ''))
+              : null,
+            converseInfo?.sessionId
+              ? h('div', { 'data-bd-note': '' }, `这条会话：${converseInfo.sessionId}（值班轮跑在它的子会话里）`)
               : null) : null),
 
         h(Card, { key: 'asr', title: '本地转写', desc: '没字幕的视频在本机转写一遍（不花 API 钱）' },
