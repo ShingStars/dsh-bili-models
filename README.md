@@ -26,14 +26,19 @@
 
 ## 装
 
-**推荐：从插件市场装（可一键更新到最新 commit）**
+**装成 GitHub 源（这样 dsh-market 里才有「更新」按钮）**
 
-```text
-dsh-market → 「从 Git 仓库安装」→ 填 github:ShingStars/dsh-bili-models
+```bash
+dsh plugin add github:ShingStars/dsh-bili-models
 ```
 
-安装后市场会记住这个 GitHub 源，仓库一有新提交，在市场的「更新」里就能直接拉到最新版 ——
-**不需要 npm 发布**，也不需要手动 `git pull`。也可以用完整 URL：`https://github.com/ShingStars/dsh-bili-models`。
+> 为什么强调 `github:`：市场判断「有没有新版」靠的是**从 lockfile 里读回已装的那个 commit，再和 HEAD 比**。
+> `link:` / `file:` 装的没有这个 commit，市场只会当成本地开发版，不给你更新。
+> 装成 `github:` 之后，仓库一有新提交（含每次发版），在市场「已安装」里点一下「更新」就拉到位 —— 不需要 npm 发布。
+
+**从插件市场安装**：本插件正在申请收录进 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
+精选列表（提交文件已就绪），收录后就能在市场的「发现」页里直接搜到、一键安装。
+市场出于安全只允许安装**精选列表内**的来源，所以现在用上面的 `dsh plugin add github:...` 命令。
 
 **本地开发：**
 

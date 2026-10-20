@@ -26,15 +26,21 @@ A community fork of [dsh-bili-scroll](https://github.com/c1overzz/dsh-bili-scrol
 
 ## Install
 
-**Recommended: install from the plugin market (one-click updates to the latest commit)**
+**Install from the GitHub source (this is what gives dsh-market its "Update" button)**
 
-```text
-dsh-market → "Install from Git repository" → github:ShingStars/dsh-bili-models
+```bash
+dsh plugin add github:ShingStars/dsh-bili-models
 ```
 
-The market remembers this GitHub source; once the repo gets new commits you can pull the latest from
-its "Update" action — **no npm publishing and no manual `git pull` needed**. A full URL also works:
-`https://github.com/ShingStars/dsh-bili-models`.
+> Why `github:` matters: the market decides "is there a new version" by reading the installed commit
+> back out of the lockfile and comparing it with HEAD. A `link:` / `file:` install has no such commit,
+> so the market treats it as local development and offers no update. Installed from `github:`, every new
+> commit (including every release) is one click away in the market's "Installed" tab — no npm publishing.
+
+**From the plugin market**: a listing is being submitted to the
+[awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) curated list; once it lands you can
+find and one-click install it in the market's Discover tab. The market only installs **curated** sources for safety,
+so until then use the `dsh plugin add github:...` command above.
 
 **Local development:**
 
