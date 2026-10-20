@@ -1,5 +1,5 @@
 - [Unreleased]
-  - 仓库合并：旧仓库 `dsh-bili-free-scroll`（v1.x 合并版）的历史并入本仓库 git 历史（tag `v1.0.0` / `v1.0.1`），`legacy/` 目录已移除，旧仓库已删除。
+  - 仓库合并：旧仓库 `dsh-bili-free-scroll`（v1.x 合并版）的历史并入本仓库 git 历史（tag `v1.0.0` / `v1.0.1`），`legacy/` 目录已移除，旧仓库已归档（仅作历史参考）。
 
 # Changelog
 

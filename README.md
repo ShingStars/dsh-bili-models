@@ -103,7 +103,7 @@ node tools/client-smoke.mjs    # 假 loader + 假 React，跑一遍 client
 ## 历史与致谢
 
 - 本仓库是 [c1overzz/dsh-bili-scroll](https://github.com/c1overzz/dsh-bili-scroll)（MIT, © 2026 c1overzz）的 fork，`bili/` 下绝大部分代码来自上游，详见 [NOTICE.md](NOTICE.md)。
-- v1.x 时代曾以 `dsh-bili-free-scroll` 的名字做过「两个插件合并成一个包」的方案，已废弃；其历史保留在本仓库 git 历史中（tag `v1.0.0` / `v1.0.1`），旧仓库已删除。
+- v1.x 时代曾以 `dsh-bili-free-scroll` 的名字做过「两个插件合并成一个包」的方案，已废弃；其历史保留在本仓库 git 历史中（tag `v1.0.0` / `v1.0.1`），旧仓库 [ShingStars/dsh-bili-free-scroll](https://github.com/ShingStars/dsh-bili-free-scroll) 已归档，仅作历史参考。
 
 ## 许可
 

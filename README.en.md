@@ -103,7 +103,7 @@ node tools/client-smoke.mjs    # fake loader + fake React, exercises the client
 ## History & credits
 
 - This repository is a fork of [c1overzz/dsh-bili-scroll](https://github.com/c1overzz/dsh-bili-scroll) (MIT, © 2026 c1overzz); most of `bili/` comes from upstream — see [NOTICE.md](NOTICE.md).
-- The v1.x era shipped as `dsh-bili-free-scroll` ("merge both plugins into one package"); it is retired. Its history lives in this repository's git history (tags `v1.0.0` / `v1.0.1`); the old repository has been deleted.
+- The v1.x era shipped as `dsh-bili-free-scroll` ("merge both plugins into one package"); it is retired. Its history lives in this repository's git history (tags `v1.0.0` / `v1.0.1`); the old repository [ShingStars/dsh-bili-free-scroll](https://github.com/ShingStars/dsh-bili-free-scroll) is archived for reference only.
 
 ## License
 
