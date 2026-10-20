@@ -156,6 +156,17 @@ export const Config = !z ? undefined : z.object({
   converseDmUids: z.string().default('').extra('volatile', true),
   /** 允许回陌生人的私信吗（默认否：只回名单里 / 你私信过的人） */
   converseAnyDm: z.boolean().default(false).extra('volatile', true),
+
+  /* ================================================================
+   * 2.4.0 新增（2026-10-20：从对话里学 · @ 单独开关 · 每天发一条动态）
+   * ================================================================ */
+
+  /** ⭐ 评论里要不要 @ 人 —— 和「要不要评论」是**两件事**，这里单独一个开关 */
+  mentionOn: z.boolean().default(false).extra('volatile', true),
+  /** ⭐ 每天发一条动态总结今天做了什么 */
+  dailyPostOn: z.boolean().default(false).extra('volatile', true),
+  /** ⭐ 从评论/私信对话里学（学到的会写进每一轮的口吻要求） */
+  learnOn: z.boolean().default(true).extra('volatile', true),
 })
 
 /**
@@ -276,6 +287,8 @@ export function apply(ctx, config) {
     humanize: true, voiceStyle: 'auto', voiceNote: '',
     converseOn: false, converseEveryMin: 30, converseCommentPerRound: 1, converseDmPerRound: 1,
     converseDmUids: '', converseAnyDm: false,
+    // 2.4.0
+    mentionOn: false, dailyPostOn: false, learnOn: true,
   }
   const normalize = (src, base) => {
     const out = { ...base }
@@ -326,6 +339,10 @@ export function apply(ctx, config) {
     if ('converseCommentPerRound' in p) p.converseCommentPerRound = Math.max(0, Math.min(Number(p.converseCommentPerRound) || 0, 10))
     if ('converseDmPerRound' in p) p.converseDmPerRound = Math.max(0, Math.min(Number(p.converseDmPerRound) || 0, 10))
     if ('converseDmUids' in p) p.converseDmUids = String(p.converseDmUids || '').slice(0, 2000)
+    // 2.4.0
+    if ('mentionOn' in p) p.mentionOn = Boolean(p.mentionOn)
+    if ('dailyPostOn' in p) p.dailyPostOn = Boolean(p.dailyPostOn)
+    if ('learnOn' in p) p.learnOn = Boolean(p.learnOn)
     return p
   }
 
@@ -419,6 +436,50 @@ export function apply(ctx, config) {
     const id = keys[Math.floor(Date.now() / 60_000) % keys.length]
     return { id, text: VOICE_STYLES[id] }
   }
+  /* ── 2.4.0：从对话里学 ─────────────────────────────────────────────────────
+   * 为什么要有它：固定写死的"说话规矩"只能让语气别太假，学不到**这个人**的习惯
+   * （对方叫它什么、什么话不爱听、什么话题能聊）。所以留一个口子：
+   * 交流轮里模型如果察觉到值得记住的事（称呼、边界、口味），用 bili_learn 记一条；
+   * 下一轮开始前把这些条目注入「怎么说话」那段 —— 越聊越像，而不是每轮从零开始。
+   * ⚠️ 只记**对话里观察到的**，不记创作设定；条目有上限，旧的自动淘汰。
+   */
+  const learnFile = join(stateDir, 'learn-state.json')
+  const LEARN_MAX = 20
+  const readLearn = () => {
+    const j = readJson(learnFile, {})
+    const list = Array.isArray(j?.lessons) ? j.lessons : []
+    return {
+      lessons: list
+        .filter((x) => x && typeof x.note === 'string' && x.note.trim())
+        .map((x) => ({ at: Number(x.at) || 0, note: String(x.note).trim(), src: String(x.src || '') })),
+      at: Number(j?.at) || 0,
+    }
+  }
+  const writeLearn = (s) => { try { writeJson(learnFile, { ...s, at: Date.now() }) } catch (e) { log('记学习笔记失败：' + (e?.message ?? e)) } }
+  const addLesson = (note, src = 'converse') => {
+    const text = String(note || '').trim().slice(0, 200)
+    if (!text) return { ok: false, error: 'note 不能为空' }
+    const s = readLearn()
+    // 去重：同一句话（忽略标点与空白差异）不重复记
+    const norm = (x) => String(x).replace(/[\s\p{P}]/gu, '')
+    if (s.lessons.some((l) => norm(l.note) === norm(text))) return { ok: true, duplicate: true, count: s.lessons.length }
+    s.lessons.push({ at: Date.now(), note: text, src })
+    if (s.lessons.length > LEARN_MAX) s.lessons = s.lessons.slice(-LEARN_MAX)
+    writeLearn(s)
+    log(`学到一条（${src}）：${text}`)
+    return { ok: true, count: s.lessons.length }
+  }
+  /** 注入提示词用的「之前聊下来学到的」（最近的在前，最多 12 条） */
+  const lessonsBlock = () => {
+    if (!cfg.learnOn) return ''
+    let list = []
+    try { list = readLearn().lessons } catch { return '' }
+    if (!list.length) return ''
+    const picked = list.slice(-12).reverse()
+    return `\n· 之前聊下来学到的（**别违背**，这些是跟真人聊出来的）：\n`
+      + picked.map((l) => `  - ${l.note}`).join('\n') + '\n'
+  }
+
   /**
    * 「像真人」那一段提示词。
    * @param {'comment'|'dm'} where 评论还是私信（长度口径不一样）
@@ -441,6 +502,7 @@ export function apply(ctx, config) {
       + `· **具体 > 抽象**：说得出视频里的哪个点、哪句话、哪个数字，而不是「内容很精彩」「很有深度」。\n`
       + `· 这一轮的口吻固定为「${v.id}」：${v.text}\n`
       + (String(cfg.voiceNote || '').trim() ? `· 另外使用者还要求：${String(cfg.voiceNote).trim()}\n` : '')
+      + lessonsBlock()
       + `===== 怎么说话（结束）=====\n`
   }
 
@@ -724,19 +786,33 @@ export function apply(ctx, config) {
     },
     async execute(args) {
       // dmMode==='only' 时本轮根本不该发公开评论 —— 在工具层也一并挡掉（除非当场 force）
-      const commentOn = Boolean(cfg.autoComment && mentionTargets().length && cfg.dmMode !== 'only')
+      // ⭐ 2.4.0：评论与 @ 拆开后，这条闸**不再要求填名单**（名单只决定要不要 @）
+      const commentOn = Boolean(cfg.autoComment && cfg.dmMode !== 'only')
       if (!commentOn && !args.force) {
         return {
           ok: false,
           blocked: true,
           hint: cfg.dmMode === 'only'
             ? '现在是「只私信」模式（dmMode=only）—— 规定不发公开评论，改成用 bili_send_message 私信。确实要发时传 force: true。'
-            : '要发评论得同时满足两条：设置里开着「自动评论并 @ 你」、并且填了「要 @ 谁」。或者本人当场让你发时传 force: true。',
+            : '要发评论得先打开「自动评论」。或者本人当场让你发时传 force: true。',
         }
+      }
+      // ⭐ 2.4.0：@ 是独立开关。关着就把正文里的 @"昵称" 剥掉 ——
+      //    提示词里说了不算，模型偶尔还是会带；在工具层兜一道最省事。
+      let text = String(args.text ?? '')
+      if (!cfg.mentionOn) {
+        const names = (() => { try { return mentionTargets() } catch { return [] } })()
+        const esc = (x) => String(x).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const pat = names.length
+          ? new RegExp(`@(?:${names.map(esc).join('|')})`, 'g')
+          : /@[^\s，,。！!？?:：]{1,20}/g
+        const stripped = text.replace(pat, '').replace(/^\s+/, '').trim()
+        if (stripped !== text.trim()) log('评论里的 @ 被剥掉了（mentionOn 关着）')
+        text = stripped
       }
       return call('bili_reply', {
         bvid: String(args.bvid ?? ''),
-        text: String(args.text ?? ''),
+        text,
         rpid: Number(args.rpid) || 0,
       })
     },
@@ -801,6 +877,49 @@ export function apply(ctx, config) {
       const uid = Number(args?.talker_id) || 0
       if (!uid) return { ok: false, error: 'talker_id 必须是数字 UID' }
       return call('bili_dm_history', { talker_id: uid, limit: Number(args?.limit) || 20 })
+    },
+  })
+
+  /* ── 2.4.0：发动态 + 学习笔记 ─────────────────────────────────────────────── */
+  tool({
+    name: 'bili_post_dynamic',
+    description: '发一条 B站 动态（纯文字，≤200 字）。用来把「今天做了什么」用第一人称发出去；'
+      + '宿主会拦一天里的第二条，所以放心调，发不出去会告诉你为什么。',
+    parameters: {
+      text: { type: 'string', description: '动态正文（纯文本，≤200 字；不要列表/markdown/话题标签）' },
+    },
+    async execute(args) {
+      refreshCfg()
+      if (!cfg.dailyPostOn) return { ok: false, error: '「每天发一条动态」没开（dailyPostOn=false）⇒ 先别发，或者让使用者打开它' }
+      const text = String(args?.text ?? '').trim()
+      if (!text) return { ok: false, error: 'text 不能为空' }
+      if (text.length > 400) return { ok: false, error: `动态太长了（${text.length} 字）；压到 200 字以内再发` }
+      const today = dayKey()
+      const st = readJson(join(stateDir, 'state.json'), {})
+      if (String(st.postedDay || '') === today) {
+        return { ok: false, skipped: true, error: `今天（${today}）已经发过一条动态了；一天只发一条` }
+      }
+      const r = await call('bili_send_dynamic', { text })
+      if (r && typeof r === 'object' && r.success === false) return { ok: false, error: String(r.error || '动态接口拒绝了这次发布') }
+      bumpState({ postedDay: today, postedAt: Date.now() })
+      log(`发了一条动态（${text.length} 字）`)
+      return { ok: true, text, result: r }
+    },
+  })
+
+  tool({
+    name: 'bili_learn',
+    description: '把「从对话里学到的、以后该照做的一件事」记下来（一句话一条，最多 20 条，旧的自动淘汰）。'
+      + '比如对方怎么称呼你、不爱听什么。下一轮开始前会自动带上这些。',
+    parameters: {
+      note: { type: 'string', description: '一句话，能直接照着做的那种（如「他不喜欢被叫大佬」）' },
+      src: { type: 'string', description: '从哪学的：converse（交流轮）/ comment / dm，默认 converse' },
+    },
+    async execute(args) {
+      refreshCfg()
+      if (!cfg.learnOn) return { ok: false, error: '「从对话里学」没开（learnOn=false）' }
+      const r = addLesson(args?.note, String(args?.src || 'converse'))
+      return r.ok ? { ok: true, ...r } : { ok: false, error: r.error }
     },
   })
 
@@ -897,7 +1016,9 @@ export function apply(ctx, config) {
       + '（峰谷之外另开的时段，一天多段；customRepeatMin>0 表示该时段每 N 分钟可再来一轮）；'
       + '真人感：`{"humanize":true,"voiceStyle":"casual","voiceNote":"别用网络烂梗"}`（voiceStyle = auto / casual / witty / warm / blunt）；'
       + '交流轮：`{"converseOn":true,"converseEveryMin":30,"converseCommentPerRound":1,"converseDmPerRound":1,'
-      + '"converseDmUids":"123","converseAnyDm":false}`（默认只回名单里的人，converseAnyDm=true 才回陌生人）。',
+      + '"converseDmUids":"123","converseAnyDm":false}`（默认只回名单里的人，converseAnyDm=true 才回陌生人）。\n'
+      + '2.4.0 新增：@ 单独开关：`{"mentionOn":false}`（关着时评论照发、只是不 @，工具层会把正文里的 @ 剥掉）；'
+      + '每天一条动态：`{"dailyPostOn":true}`；从对话里学：`{"learnOn":true}`（学到的会带进之后每一轮的"怎么说话"）。',
     parameters: { patch: { type: 'object', additionalProperties: true, description: '要改的字段（可省）' } },
     async execute(args) {
       let host = null
@@ -1229,7 +1350,9 @@ export function apply(ctx, config) {
     const mentions = mentionTargets()
     const dms = dmTargets()
     const watches = watchTargets()
-    const commentOn = Boolean(cfg.autoComment && mentions.length && cfg.dmMode !== 'only')
+    //    ⭐ 2.4.0：**评论**与 **@** 拆成两个开关 —— 评论不需要名单，@ 才是可选的加菜
+    const commentOn = Boolean(cfg.autoComment && cfg.dmMode !== 'only')
+    const mentionOn = Boolean(commentOn && cfg.mentionOn && mentions.length)
     const dmOn = Boolean(cfg.dmMode !== 'off' && dms.length > 0)
     return `你是这个账号的 B站 助手。`
       + `下面是使用者的设定（如果有）—— **按它来**，别用你默认那套人格。`
@@ -1260,11 +1383,17 @@ export function apply(ctx, config) {
       + `⭐ 另外把这一轮**看过的每一条视频（挑中的和跳过的都算）**追加进归档：${join(digestDir, `${dayKey().slice(0, 7)}.md`)}`
       + ` —— 一行一条：日期 · BV 号 · 标题 · UP · 一句话结论 · 链接（跳过的那条在后面注明理由）；`
       + `这是**给以后检索用**的（报告是给人看的，归档是给"回头翻"用的），别省略、也别只写挑中的。`
-      + `自动评论并 @ ${mentions.length ? mentions.join('、') : '（还没填要 @ 谁）'} 是${commentOn
-        ? `开着的（每轮最多 ${cfg.commentPerRound} 条评论，每条在正文里用纯文本 @ 上面这些昵称，@ 一次就够，${cfg.humanize ? '10–40 字' : '150 字内'}）`
+      + `自动评论是${commentOn
+        ? `开着的（⭐ **每挑中一条视频，就在它下面留一条评论**${Number(cfg.commentPerRound) > 0 ? `，这一轮最多 ${cfg.commentPerRound} 条` : '，不设条数上限'}；`
+          + `每条 ${cfg.humanize ? '10–40 字' : '150 字内'}，说的是**这条视频里的具体东西**，别写通用夸奖）`
         : (cfg.dmMode === 'only'
           ? '关着的 —— 当前是「**只私信**」模式：**这一轮一条公开评论都不许发**，改走私信'
           : '关着的（只写报告，别发评论）')}。`
+      + `在评论里 @ 人是${mentionOn
+        ? `**开着的**：每条评论正文里用纯文本 @ 一次这些昵称 —— ${mentions.join('、')}（@ 一次就够，别圈一串）`
+        : (cfg.mentionOn && !mentions.length
+          ? '想要 @ 但**还没填要 @ 谁** ⇒ 这一轮不 @（别自己编昵称）'
+          : '**关着的** ⇒ 评论里**一个 @ 都别写**，纯正文')}。`
       + (dmOn
         ? `⭐⭐ **私信投递**：用 bili_send_message 把这一轮的结果发给这些 UID：**${dms.join('、')}**`
           + `（**每个收件人各发一条**，内容可以一样；人多了别漏、也别把给 A 的话只发给 B）。`
@@ -1290,6 +1419,12 @@ export function apply(ctx, config) {
           : `回复评论：开着（每轮最多回 ${Number(cfg.replyPerRound) || 1} 条）—— 只回「直接回复到你那条评论下面的人」，回完记进报告；找不到你那条评论就跳过，别硬找。`)
         : `回复评论：关着（一个字都不要回任何人 —— 有人回复你那条评论也不要理）。`)
       + humanizeBlock('comment')
+      + (cfg.dailyPostOn
+        ? `\n⭐⭐ **发一条动态**：报告写完之后，用 \`bili_post_dynamic\` 发**一条**动态（正文一次调用就够），`
+          + `把今天做了什么用**第一人称**说清楚：刷到了什么、在哪条下面说了什么、有什么感受。`
+          + `200 字以内、纯文本、**不要**列表/编号/markdown/话题标签，也别写成工作汇报或日报摘要；`
+          + `像人发动态那样，一两段口语就行。⚠️ **一天只发一条**（宿主会拦第二次），别连发。`
+        : '')
       + `最后用一句话汇报你挑到了什么。现在几点了自己看一眼系统时间。`
   }
 
@@ -1318,6 +1453,8 @@ export function apply(ctx, config) {
     if (cfg.replyToComments || cfg.converseOn) list.push('bili_received_replies')
     // 2.3.0 对话轮要读：评论回复（整理过的）+ 私信会话 + 私信往来
     if (cfg.converseOn) list.push('bili_comment_replies', 'bili_dm_sessions', 'bili_dm_history')
+    // 2.4.0 每天发一条动态
+    if (cfg.dailyPostOn) list.push('bili_send_dynamic')
     return list
   }
 
@@ -1980,6 +2117,16 @@ export function apply(ctx, config) {
     s += '· 不要复读对方原话，不要「赞同 + 补充」那套模板，不要客套收尾（「希望对你有帮助」）。\n'
     s += '· 对方语气冲，也不用卑躬屈膝；正常还一句就行。\n'
     s += humanizeBlock('comment')
+    // ⭐ 2.4.0：让这一轮有机会把「聊出来的东西」留下来
+    if (cfg.learnOn) {
+      s += '\n===== 从这一段对话里学（可选，但很有用）=====\n'
+      s += '如果这轮对话里出现了**值得长期记住**的事，用 `bili_learn` 记下来（一次一条，最多 3 条，没就一条都别记）：\n'
+      s += '· 对方怎么称呼你 / 你该怎么称呼对方；\n'
+      s += '· 对方的偏好或忌讳（不爱听什么、对什么话题敏感）；\n'
+      s += '· 聊出来、以后还能接着聊的具体信息（在做的事、追的番、踩过的坑）。\n'
+      s += '⚠️ 只记**对话里真实出现过的**，别脑补、别记你自己的创作设定；\n'
+      s += '⚠️ 一句话一条，写成「他怎么称呼我」「他不喜欢被叫大佬」这种能直接照着做的形式，别写成日志。\n'
+    }
     s += '\n做完用一句话汇报：回了几条评论、几条私信，分别是谁。'
     return s
   }
@@ -2437,6 +2584,17 @@ export function apply(ctx, config) {
         } catch { return [] }
       })(),
       voice: { humanize: Boolean(cfg.humanize), style: String(cfg.voiceStyle || 'auto'), name: (() => { try { return pickVoice().name } catch { return '' } })() },
+      // ── 2.4.0：@ 单独开关 / 学到的 / 今天发过动态没有 ──
+      mention: { on: Boolean(cfg.mentionOn), commentOn: (() => { try { return Boolean(cfg.autoComment && cfg.dmMode !== 'only') } catch { return false } })(), targets: (() => { try { return mentionTargets() } catch { return [] } })() },
+      learn: (() => {
+        let s = { lessons: [] }
+        try { s = readLearn() } catch { /* 读不到就当空 */ }
+        return { on: Boolean(cfg.learnOn), count: s.lessons.length, latest: s.lessons.slice(-3).map((l) => l.note) }
+      })(),
+      dynamic: (() => {
+        const st3 = readJson(join(stateDir, 'state.json'), {})
+        return { on: Boolean(cfg.dailyPostOn), postedDay: String(st3.postedDay || ''), postedAt: Number(st3.postedAt) || 0, postedToday: String(st3.postedDay || '') === dayKey() }
+      })(),
       converse: (() => {
         let st2 = { repliedComments: {}, answeredDmTs: {} }
         try { st2 = readConverseState() } catch { /* 读不到就当空表 */ }
@@ -2454,6 +2612,37 @@ export function apply(ctx, config) {
         }
       })(),
     }
+  }
+
+  /**
+   * ⭐ 2.4.0：不花模型、从今天的报告里拼一条动态（设置页「现在发一条」的兜底）。
+   *    只取「### BV号」这种标题行 + 标题文字，拼成第一人称的一两句；故意写得很素，
+   *    因为它的定位是**没让模型开口时也别空着**，不是替代模型写。
+   */
+  const composeDynamicFromReport = () => {
+    try {
+      const file = join(outDir, `${dayKey()}.md`)
+      if (!existsSync(file)) return ''
+      const lines = readFileSync(file, 'utf8').split(/\r?\n/)
+      const picks = []
+      for (let i = 0; i < lines.length; i++) {
+        const m = /^###\s*(BV[0-9A-Za-z]{10})\s*(.*)$/.exec(lines[i].trim())
+        if (!m) continue
+        let title = (m[2] || '').trim()
+        if (!title) {
+          const next = (lines[i + 1] || '').trim()
+          if (next && !next.startsWith('#')) title = next.slice(0, 60)
+        }
+        picks.push({ bvid: m[1], title: title.replace(/^[·\-—\s]+/, '').slice(0, 40) })
+        if (picks.length >= 4) break
+      }
+      if (!picks.length) return ''
+      const head = `今天在B站刷了 ${picks.length} 条，值得说的：`
+      const body = picks.map((p) => p.title || p.bvid).join('；')
+      let text = `${head}${body}。`
+      if (text.length > 200) text = `${text.slice(0, 197)}…`
+      return text
+    } catch { return '' }
   }
 
   const handle = async (req, res, url) => {
@@ -2514,7 +2703,9 @@ export function apply(ctx, config) {
         'customWindowsOn', 'customWindows', 'customRepeatMin',
         'humanize', 'voiceStyle', 'voiceNote',
         'converseOn', 'converseEveryMin', 'converseCommentPerRound', 'converseDmPerRound',
-        'converseDmUids', 'converseAnyDm']) {
+        'converseDmUids', 'converseAnyDm',
+        // 2.4.0
+        'mentionOn', 'dailyPostOn', 'learnOn']) {
         if (k in body) patch[k] = body[k]
       }
       // ⭐ 范围钳制 + 两份都写（config.json / DSH 原生设置页），统一走 persistCfg —— 见文件上方
@@ -2580,6 +2771,54 @@ export function apply(ctx, config) {
         lastAt: converseLastAt || 0,
         busy: converseBusy,
       })
+    }
+
+    // ⭐ 2.4.0：学习笔记 —— 看 / 清空
+    if (req.method === 'GET' && path === '/api/bili-duty/learn') {
+      refreshCfg()
+      let s = { lessons: [], at: 0 }
+      try { s = readLearn() } catch { /* 读不到就当空 */ }
+      return sendJson(res, 200, {
+        ok: true,
+        on: Boolean(cfg.learnOn),
+        at: s.at || 0,
+        lessons: s.lessons.map((l) => ({ at: l.at, note: l.note, src: l.src })),
+      })
+    }
+    if (req.method === 'POST' && path === '/api/bili-duty/learn') {
+      const body = await readBody(req)
+      if (body?.clear) { writeLearn({ lessons: [] }); log('学习笔记已清空'); return sendJson(res, 200, { ok: true, cleared: true }) }
+      const r = addLesson(body?.note, String(body?.src || 'manual'))
+      return sendJson(res, r.ok ? 200 : 400, r)
+    }
+
+    // ⭐ 2.4.0：动态 —— 看今天发没发 / 用报告摘要立刻发一条（不花模型）
+    if (req.method === 'GET' && path === '/api/bili-duty/dynamic') {
+      refreshCfg()
+      const st = readJson(join(stateDir, 'state.json'), {})
+      return sendJson(res, 200, {
+        ok: true,
+        on: Boolean(cfg.dailyPostOn),
+        today: dayKey(),
+        postedDay: String(st.postedDay || ''),
+        postedAt: Number(st.postedAt) || 0,
+        postedToday: String(st.postedDay || '') === dayKey(),
+      })
+    }
+    if (req.method === 'POST' && path === '/api/bili-duty/dynamic') {
+      refreshCfg()
+      if (!cfg.dailyPostOn) return sendJson(res, 400, { ok: false, error: '「每天发一条动态」没开（dailyPostOn=false）' })
+      const st = readJson(join(stateDir, 'state.json'), {})
+      if (String(st.postedDay || '') === dayKey()) return sendJson(res, 409, { ok: false, error: '今天已经发过一条了' })
+      const body = await readBody(req)
+      let text = String(body?.text || '').trim()
+      if (!text) text = composeDynamicFromReport()
+      if (!text) return sendJson(res, 400, { ok: false, error: '今天还没有报告可总结；先刷一轮，或者自己写一段' })
+      const r = await call('bili_send_dynamic', { text })
+      if (r && typeof r === 'object' && r.success === false) return sendJson(res, 502, { ok: false, error: String(r.error || '接口拒绝') })
+      bumpState({ postedDay: dayKey(), postedAt: Date.now() })
+      log(`手动发了一条动态（${text.length} 字）`)
+      return sendJson(res, 200, { ok: true, text, result: r })
     }
 
     // 建 venv + 装依赖（**不等它**：几分钟的活，进度写 install.log）

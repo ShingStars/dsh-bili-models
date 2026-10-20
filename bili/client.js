@@ -318,6 +318,10 @@ select[data-bd-input]{cursor:pointer;}
       const [converseAnyDm, setConverseAnyDm] = React.useState(null)
       const [converseInfo, setConverseInfo] = React.useState(null)
 
+      /* 2.4.0：@ 单独开关 / 学到的 / 今天发过动态没有 */
+      const [learnInfo, setLearnInfo] = React.useState(null)
+      const [dynInfo, setDynInfo] = React.useState(null)
+
       /* 扫码轮询的 timer 必须能停：切走页面后跑到已卸载组件上 setState 会报警告 */
       const loginTimer = React.useRef(null)
       const alive = React.useRef(true)
@@ -372,6 +376,16 @@ select[data-bd-input]{cursor:pointer;}
         jget('/converse').then((r) => setConverseInfo(r || null)).catch(() => {})
       }, [])
       React.useEffect(() => { loadConverse() }, [])
+
+      const loadLearn = React.useCallback(() => {
+        jget('/learn').then((r) => setLearnInfo(r || null)).catch(() => {})
+      }, [])
+      React.useEffect(() => { loadLearn() }, [])
+
+      const loadDynamic = React.useCallback(() => {
+        jget('/dynamic').then((r) => setDynInfo(r || null)).catch(() => {})
+      }, [])
+      React.useEffect(() => { loadDynamic() }, [])
 
       /* 模型清单只在进页面时拉一次（服务端有 30 秒缓存） */
       React.useEffect(() => {
@@ -504,6 +518,26 @@ select[data-bd-input]{cursor:pointer;}
           const r = await jpost('/converse', {})
           say(r?.started ? '交流轮已开跑（回完看 duty.log 那行「交流轮」）' : `没跑：${r?.reason || '未知原因'}`, r?.started ? 'good' : 'warn')
           loadConverse()
+        } catch (e) { say(String(e?.message ?? e), 'bad') }
+        finally { setBusy('') }
+      }
+
+      /* ⭐ 2.4.0：立刻发一条动态 / 清空学到的 */
+      const onPostDynamic = async () => {
+        setBusy('dynamic')
+        try {
+          const r = await jpost('/dynamic', {})
+          say(r?.ok ? `已发：${r.text}` : `没发成：${r?.error || '未知原因'}`, r?.ok ? 'good' : 'warn')
+          loadDynamic()
+        } catch (e) { say(String(e?.message ?? e), 'bad') }
+        finally { setBusy('') }
+      }
+      const onLearnClear = async () => {
+        setBusy('learn')
+        try {
+          await jpost('/learn', { clear: true })
+          say('学习笔记已清空', 'good')
+          loadLearn()
         } catch (e) { say(String(e?.message ?? e), 'bad') }
         finally { setBusy('') }
       }
@@ -679,7 +713,7 @@ select[data-bd-input]{cursor:pointer;}
           h(Field, { label: '自动评论并 @', note: '默认关' },
             h(Switch, { on: on('autoComment'), onChange: (v) => patch({ autoComment: v }, '自动评论') })),
           on('autoComment') ? h('div', { 'data-bd-sub': '' },
-            h(Field, { label: '每轮最多发几条', note: '0 = 这一轮不发评论' },
+            h(Field, { label: '每轮最多发几条', note: '0 = 每条挑中的都评论（不设上限）' },
               h('input', {
                 'data-bd-input': '', 'data-bd-num': '', type: 'number', min: 0, max: 20,
                 value: perRound ?? '',
@@ -689,7 +723,9 @@ select[data-bd-input]{cursor:pointer;}
                   setPerRound(String(n)); patch({ commentPerRound: n }, '每轮几条评论')
                 },
               })),
-            h(Field, { label: '要 @ 谁', note: '可多人，逗号分隔；留空则不发评论', wide: true },
+            h(Field, { label: '评论里 @ 人', note: '和「评论」分开：关着就只发正文，不 @ 任何人' },
+              h(Switch, { on: on('mentionOn'), onChange: (v) => patch({ mentionOn: v }, '@ 开关') })),
+            on('mentionOn') ? h(Field, { label: '要 @ 谁', note: '可多人，逗号分隔', wide: true },
               h('input', {
                 'data-bd-input': '', value: mentionNames ?? '',
                 placeholder: '例如：小明, 小红（B站 昵称）',
@@ -700,7 +736,36 @@ select[data-bd-input]{cursor:pointer;}
                   setMentionNames(v); setMention(first)
                   patch({ mentionNames: v, mentionName: first }, '要 @ 谁')
                 },
-              }))) : null),
+              })) : null,
+            on('mentionOn') && !String(mentionNames || '').trim()
+              ? h('div', { 'data-bd-note': '' }, '这轮会想 @ 但名单还空着 —— 不会 @ 任何人（也不会自己编昵称）')
+              : null) : null),
+        /* ⭐ 2.4.0：每天发一条动态 */
+        h(Card, { key: 'dynamic', title: '每天发一条动态', desc: '把今天刷到了什么、说了什么，用第一人称发一条 B站 动态（一天只发一条）' },
+          h(Field, { label: '开启', note: '默认关；刷完那一轮末尾自己发' },
+            h(Switch, { on: on('dailyPostOn'), onChange: (v) => patch({ dailyPostOn: v }, '每天发动态') })),
+          on('dailyPostOn') ? h('div', { 'data-bd-sub': '' },
+            h('div', { 'data-bd-actions': '' },
+              h('button', { 'data-bd-btn': '', disabled: busy === 'dynamic' || Boolean(dynInfo?.postedToday), onClick: onPostDynamic },
+                dynInfo?.postedToday ? '今天已发过' : '现在发一条'),
+              h('button', { 'data-bd-btn': '', 'data-quiet': '', onClick: () => loadDynamic() }, '刷新')),
+            h('div', { 'data-bd-note': '' },
+              dynInfo?.postedToday
+                ? `今天 ${dynInfo.postedDay} 已发过${dynInfo.postedAt ? `（${new Date(dynInfo.postedAt).toLocaleString('zh-CN')}）` : ''}`
+                : '还没发。手点「现在发一条」= 用今天的报告拼一句人话，不花模型。')) : null),
+        /* ⭐ 2.4.0：从对话里学 */
+        h(Card, { key: 'learn', title: '从对话里学', desc: '聊出来的事（对方怎么称呼你、不爱听什么）会记下来，带进之后每一轮的说话规矩' },
+          h(Field, { label: '开启', note: '默认开；交流轮里学，最多记 20 条' },
+            h(Switch, { on: on('learnOn'), onChange: (v) => patch({ learnOn: v }, '从对话里学') })),
+          on('learnOn') ? h('div', { 'data-bd-sub': '' },
+            (learnInfo?.lessons || []).length
+              ? h('div', { 'data-bd-list': '' },
+                ...(learnInfo.lessons).slice(-8).reverse().map((l, i) => h('div', { key: 'l' + i, 'data-bd-item': '' },
+                  h('b', null, l.note), h('span', null, l.src || ''))))
+              : h('div', { 'data-bd-note': '' }, '还没学到什么 —— 交流轮聊几轮就有了'),
+            h('div', { 'data-bd-actions': '' },
+              h('button', { 'data-bd-btn': '', disabled: busy === 'learn' || !(learnInfo?.lessons || []).length, onClick: onLearnClear }, '清空'),
+              h('button', { 'data-bd-btn': '', 'data-quiet': '', onClick: () => loadLearn() }, '刷新'))) : null),
         h(Card, { key: 'dm', title: '投递方式' },
           h(Field, { label: '评论 还是 私信' },
             h(Segment, {

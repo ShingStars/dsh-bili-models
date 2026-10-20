@@ -1,7 +1,7 @@
 {
   "name": "dsh-bili-models",
-  "version": "2.3.0",
-  "description": "刷B站 + 可选模型：在 dsh-bili-scroll 的基础上加「这一轮用哪个模型」，可选 DSH 里任何已注册的模型（含其它插件提供的，如 Our Free Model）",
+  "version": "2.4.0",
+  "description": "刷B站（dsh-bili-scroll 的社区分支）：可选任意 DSH 已注册模型、宿主内固定会话运行、评论/私信真对话并从聊天里学习、特别关注 UP 主、自动评论与 @ 分开、每天发一条动态",
   "keywords": [
     "dsh",
     "dsh-plugin",

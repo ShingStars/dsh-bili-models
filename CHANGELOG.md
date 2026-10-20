@@ -3,6 +3,29 @@
 
 # Changelog
 
+## 2.4.0 — 2026-10-20
+
+### Added
+
+- **从对话里学**（`learnOn`，默认开）：交流轮里模型察觉到值得长期记住的事（对方怎么称呼它、
+  不爱听什么、能接着聊的具体信息）就用 `bili_learn` 记一条；条目落在 `~/.dsh/bili-duty/learn-state.json`
+  （最多 20 条，旧的自然淘汰，同句去重），**每轮开始前注入「怎么说话」那一段** ——
+  越聊越像，而不是每轮从零开始。HTTP：`GET/POST /api/bili-duty/learn`（`{clear:true}` 清空）。
+- **自动评论与 @ 拆成两个开关**：`mentionOn`（默认关）只决定**要不要 @**；评论照发、正文不带 @。
+  `bili_reply` 在工具层兜一道 —— `mentionOn` 关着时把正文里的 `@昵称` 剥掉（提示词说了不算，模型偶尔还是会带）。
+- **每天发一条动态**（`dailyPostOn`，默认关）：刷完那一轮末尾用 `bili_post_dynamic` 发一条第一人称动态
+  （≤200 字、纯文本、不写列表/话题标签）。一天只发一条（`state.json` 的 `postedDay` 钉住）。
+  HTTP：`GET /api/bili-duty/dynamic`（今天发没发）、`POST /api/bili-duty/dynamic`（用今天报告拼一句人话立刻发，不花模型）。
+
+### Changed
+
+- **评论不再要求先填 @ 名单**：`commentOn = autoComment && dmMode !== 'only'`。
+  旧版把「@ 谁」当成发评论的前提，等于两个功能绑在一个开关上；现在 `commentPerRound = 0` 表示
+  **每条挑中的都评论**（不设上限），>0 才是上限。功能重复的部分按「评论归评论、@ 归 @」合并。
+- 设置页「发言」页：自动评论卡拆成「自动评论 / 评论里 @ 人 / 要 @ 谁」，新增「每天发一条动态」与
+  「从对话里学」两张卡（学到的条目列表 + 清空）。
+- `bili_config` 描述补 2.4.0 三个键；`status()` 增加 `mention` / `learn` / `dynamic`。
+
 ## 2.3.0 — 2026-10-20
 
 ### Added

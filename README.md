@@ -17,8 +17,25 @@
 | 7 | **MCP 工具白名单** | 缺 `bili_send_message` / `bili_received_replies`，私信与评论复核在子进程里看不到工具 | 已补齐 |
 | 8 | **v4 会话格式** | — | 宿主内投喂的消息 `source.kind` 用自有 producer（`'bili-duty'`），过 v4 会话持久化校验（v2.2.0 修） |
 | 9 | **设置页 UI** | 一整页平铺的开关 | 胶囊分页（概览 / 定时 / 发言 / 关注 / 模型 / 环境），hero 卡 + 配额进度条，配色走 DSH 设计变量，深浅色跟随宿主 |
+| 10 | **说话像真人** | 150 字内、允许分点的规整写法 | 评论 10–40 字 / 私信 30–120 字，禁 markdown、禁客套模板，每轮换口吻（`voiceStyle`），可追加自己的规矩（`voiceNote`） |
+| 11 | **评论与 @** | 绑在一个开关上（填了 `mentionName` 才会评论） | 拆成两个开关：`autoComment` 管评论、`mentionOn` 管 @；`mentionOn` 关着时工具层会把正文里的 @ 剥掉 |
+| 12 | **对话** | 只做单方面通知 | 「交流轮」单独跑：回评论楼中楼 + 回私信往来，带配额与去重（`converse-state.json`） |
+| 13 | **从对话里学** | 无 | `learnOn`：交流轮里学到的事（称呼、忌讳、能接着聊的信息）记进 `learn-state.json`，之后每轮的说话规矩都会带上 |
+| 14 | **自定义定时时段** | 只有峰谷两个窗口 | `customWindows`：`09:00-10:30, 15:00-17:00` 一天最多 8 段，`customRepeatMin` 可让每段隔几分钟再来一轮 |
+| 15 | **发动态** | 无 | `dailyPostOn`：每天发一条第一人称动态总结今天（一天一条，`bili_post_dynamic`） |
 
 ## 装
+
+**推荐：从插件市场装（可一键更新到最新 commit）**
+
+```text
+dsh-market → 「从 Git 仓库安装」→ 填 github:ShingStars/dsh-bili-models
+```
+
+安装后市场会记住这个 GitHub 源，仓库一有新提交，在市场的「更新」里就能直接拉到最新版 ——
+**不需要 npm 发布**，也不需要手动 `git pull`。也可以用完整 URL：`https://github.com/ShingStars/dsh-bili-models`。
+
+**本地开发：**
 
 ```bash
 git clone https://github.com/ShingStars/dsh-bili-models.git
@@ -28,6 +45,10 @@ dsh plugin add file:C:/path/to/dsh-bili-models
 装完重启 DSH，在「设置 → 刷B站」里能看到新 UI。
 
 > ⭐ 别和原版 `dsh-bili-scroll` 同装：两个插件用同一个家目录，同时启用会互相干扰。从原版迁移请先卸载原版。
+>
+> ⚠️ **别在插件市场页里手动开关本插件**：市场的 toggle 会同时在 profile 的 `cordis.patch.yml` 里写一行
+> `disabled: true`，一旦那次 enable 因为「loader 里还没有这条 entry」失败，它会维持关闭状态并且**不提示**，
+> 表现成「插件没了 / 配置像被重置」。要装卸请在市场的「安装/卸载」里做，别用那个开关。
 
 ## 用
 
@@ -88,7 +109,8 @@ headless-overlay.yml headless 模式每轮前重写
 - **B 站账号等级**：新号发不出公开评论（`-107 账号未转正`）、私信可能 `21016 等级不够`。不是插件的问题，报告里会如实记录。
 - **模型调不通**：`/api/bili-duty/models` 能看到某个 provider，不代表它的账号可用；失败时看 `duty.log`。
 - **桥接解析**（headless 模式）：桥接用的是本插件所在的那棵 `node_modules`，「提供方插件」要装在同一份 DSH 里。
-- 本插件不提供自更新，更新请 `git pull` 后重装。
+- 本插件不自己拉代码更新：**从插件市场以 `github:` 源安装的，在市场的「更新」里点一下就能拉到最新 commit**；
+  `file:` 本地装的请 `git pull` 后重装。
 - **插件市场开关**：不要在第三方插件市场页里切换本插件的开关 —— 它的启用状态走 profile 配置（`cordis.patch.yml` + `dsh.profile.bundles`），市场页的切换会和它打架（已知会误关）。
 
 ## 开发

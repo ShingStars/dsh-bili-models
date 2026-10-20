@@ -17,8 +17,26 @@ A community fork of [dsh-bili-scroll](https://github.com/c1overzz/dsh-bili-scrol
 | 7 | **MCP tool whitelist** | Missing `bili_send_message` / `bili_received_replies`, so DMs and reply-review saw no tools in the child | Whitelist completed |
 | 8 | **v4 session format** | — | In-host messages carry a producer-owned `source.kind` (`'bili-duty'`) that passes v4 session-persistence validation (fixed in v2.2.0) |
 | 9 | **Settings UI** | One long page of switches | Capsule tabs (Overview / Schedule / Speak / Watch / Model / System), hero card + quota progress bar, DSH design tokens, follows the host theme |
+| 10 | **Talking like a person** | Up to 150 chars, bullet points allowed | Comments 10–40 chars / DMs 30–120 chars, no markdown, no canned filler, rotating voice per round (`voiceStyle`), plus your own rules (`voiceNote`) |
+| 11 | **Comments vs @** | One switch for both (comment only when `mentionName` set) | Two switches: `autoComment` for commenting, `mentionOn` for mentioning; with `mentionOn` off the tool strips `@` from the text |
+| 12 | **Conversation** | One-way notifications only | A separate "conversation round": replies in comment threads and answers DMs, with quotas and dedup (`converse-state.json`) |
+| 13 | **Learning from talk** | — | `learnOn`: facts learned during conversation rounds (forms of address, pet peeves, follow-up material) go to `learn-state.json` and are folded into every later round's voice rules |
+| 14 | **Custom time windows** | Only the two peak/valley windows | `customWindows`: up to 8 ranges a day like `09:00-10:30, 15:00-17:00`; `customRepeatMin` lets a range re-run every N minutes |
+| 15 | **Daily dynamic post** | — | `dailyPostOn`: one first-person dynamic per day summarising what it did (`bili_post_dynamic`) |
 
 ## Install
+
+**Recommended: install from the plugin market (one-click updates to the latest commit)**
+
+```text
+dsh-market → "Install from Git repository" → github:ShingStars/dsh-bili-models
+```
+
+The market remembers this GitHub source; once the repo gets new commits you can pull the latest from
+its "Update" action — **no npm publishing and no manual `git pull` needed**. A full URL also works:
+`https://github.com/ShingStars/dsh-bili-models`.
+
+**Local development:**
 
 ```bash
 git clone https://github.com/ShingStars/dsh-bili-models.git
@@ -28,6 +46,11 @@ dsh plugin add file:C:/path/to/dsh-bili-models
 Restart DSH afterwards; look for the new UI under "Settings → 刷B站".
 
 > ⭐ Don't install alongside the original `dsh-bili-scroll`: both use the same home directory and will interfere. Uninstall the original first when migrating.
+>
+> ⚠️ **Don't flip this plugin's switch on the market page**: that toggle also appends `disabled: true`
+> to the profile's `cordis.patch.yml`, and if the enable step fails ("no loader entry matched") it silently
+> stays disabled — which looks like "the plugin disappeared / my config was reset". Install and uninstall
+> from the market's install action instead.
 
 ## Usage
 
@@ -88,7 +111,10 @@ headless-overlay.yml rewritten before each headless round
 - **Account level**: fresh Bilibili accounts cannot post public comments (`-107`) and may fail DMs (`21016`). Not a plugin issue; reports record it honestly.
 - **Models**: a provider appearing in `/api/bili-duty/models` doesn't guarantee its account works; see `duty.log` on failure.
 - **Bridge resolution** (headless mode): bridges resolve against the plugin's own `node_modules` tree — keep bridge plugins in the same DSH install.
-- No self-update; `git pull` and reinstall.
+- No code self-update: **installed from the market via a `github:` source, use its "Update" action** to pull the latest commit;
+  for `file:` installs, `git pull` and reinstall.
+- **Market switch**: don't flip this plugin's switch on a third-party market page — its enabled state lives in the profile
+  (`cordis.patch.yml` + `dsh.profile.bundles`), and that switch fights it (it has silently disabled the plugin before).
 - **Market toggle**: don't flip this plugin's switch in third-party plugin markets — its enabled state lives in the profile config (`cordis.patch.yml` + `dsh.profile.bundles`), and market toggles fight it (known to mis-disable).
 
 ## Development
