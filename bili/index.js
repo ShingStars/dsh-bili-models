@@ -368,7 +368,8 @@ export function apply(ctx, config) {
     if (!c.customWindowsOn) return []
     const out = []
     for (const piece of String(c.customWindows || '').split(/[,，;；\n]+/)) {
-      const m = /^\s*(\d{1,2}):(\d{2})\s*(?:-|~|到|—|–)\s*(\d{1,2}):(\d{2})\s*$/.exec(piece)
+      // 容错：`9:5-11:00` 这种单位数也认（人随手打的时候不会补零）
+      const m = /^\s*(\d{1,2}):(\d{1,2})\s*(?:-|~|到|—|–)\s*(\d{1,2}):(\d{1,2})\s*$/.exec(piece)
       if (!m) continue
       const hh = (n) => Math.max(0, Math.min(Number(n) || 0, 23))
       const mm = (n) => Math.max(0, Math.min(Number(n) || 0, 59))
