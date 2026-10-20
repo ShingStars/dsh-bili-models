@@ -1936,6 +1936,11 @@ export function apply(ctx, config) {
               text: String(m?.text || '').slice(0, 400),
             }))
           } catch (e) { log(`读私信往来失败（${uid}）：${e?.message ?? e}`) }
+          // ⭐ 兜底：B站 那边有时取不到历史（对方只发过一条、或会话太新），
+          //    用会话列表里的 last_msg 顶上 —— 总比让模型对着一个空对话瞎回强。
+          if (!messages.length && String(s?.text || '').trim()) {
+            messages = [{ fromMe: Boolean(s.from_me), text: String(s.text).slice(0, 400) }]
+          }
           dms.push({ uid, lastTs: ts, messages })
           if (dms.length >= wantDms) break
         }
