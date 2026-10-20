@@ -1,18 +1,22 @@
 # dsh-bili-models
 
-Bilibili "duty scroll" ([dsh-bili-scroll](https://github.com/c1overzz/dsh-bili-scroll)) **plus a per-run model picker**.
+A community fork of [dsh-bili-scroll](https://github.com/c1overzz/dsh-bili-scroll): keeps everything the original "scroll Bilibili for me every day" plugin does, and adds a **per-round model picker**, **in-host fixed-session runs**, **multi-recipient DMs / mentions**, **watched-uploader notifications**, and a redesigned settings page.
 
-Upstream runs each round in a separate `dsh` child process and uses whatever default model the profile has hard-coded — if that provider has no API key, the whole round fails. This fork adds a model section to the settings page: it lists the models **actually registered in the running DSH**, including your own and those provided by other plugins (e.g. [Our Free Model](https://github.com/Ebony-Vinyl/dsh-our-free-model)). Whatever you pick is what that round uses.
+> The original `dsh-bili-scroll` (by [c1overzz](https://github.com/c1overzz), MIT) automatically scrolls Bilibili each day: searches keywords → reads subtitles to pick what's worth watching → writes a daily report → @-mentions / DMs you about the good ones. This fork evolved from upstream 0.1.11; the home directory (`~/.dsh/bili-duty/`) is fully compatible — you can migrate from the original directly and keep your config, dedup table, reports, and scanned-login credentials.
 
-## What's in this repository
+## Differences from the original dsh-bili-scroll
 
-| Path | Contents |
-| --- | --- |
-| root | The main line: `dsh-bili-models` (what this document describes) |
-| `bili/` | The plugin itself, based on upstream `dsh-bili-scroll` 0.1.11 |
-| `legacy/dsh-bili-free-scroll/` | The abandoned v1.x "merge both plugins into one package" attempt, kept for reference only — do not install (see [LEGACY.md](LEGACY.md)) |
-
----
+| # | Capability | Original dsh-bili-scroll | This fork dsh-bili-models |
+| --- | --- | --- | --- |
+| 1 | **Model per round** | Spawns a `dsh --profile headless` child using whatever default model the profile hard-codes; no API key ⇒ the whole round fails | Pick **any model actually registered in your DSH** (including free models from other plugins, e.g. [Our Free Model](https://github.com/Ebony-Vinyl/dsh-our-free-model)); `GET /api/bili-duty/models` lists them live |
+| 2 | **How a round runs** | A new child process every time = a brand-new session | Default is an **in-host fixed session** (`ctx.agents`; each round is a new turn on the same session), no child process, no new sessions; `runMode: headless` switches back |
+| 3 | **Context-insights clash** | The child-process session is unknown to the host's sessions table, so opening the Context Insights panel treats it as a cold session, rewrites projections, and kills the running round | The in-host session is live for the host — the clash is gone by construction |
+| 4 | **DM / @ recipients** | One each (`dmUid` / `mentionName`) | Multiple: comma-separated `dmUids` / `mentionNames`, up to 20 each, one message per recipient |
+| 5 | **Watched uploaders** | — | Watch up to 50 UP masters (`watchUids`); get a DM / comment @ when they post (`watchNotify`), configurable check interval, manual "check now" |
+| 6 | **Crash bug** | `loadCfg()` references undeclared variables (`hostDiff` / `lastDiffSig`) — a `ReferenceError` whenever the host has settings for the plugin | Fixed (since v1.0.1) |
+| 7 | **MCP tool whitelist** | Missing `bili_send_message` / `bili_received_replies`, so DMs and reply-review saw no tools in the child | Whitelist completed |
+| 8 | **v4 session format** | — | In-host messages carry a producer-owned `source.kind` (`'bili-duty'`) that passes v4 session-persistence validation (fixed in v2.2.0) |
+| 9 | **Settings UI** | One long page of switches | Capsule tabs (Overview / Schedule / Speak / Watch / Model / System), hero card + quota progress bar, DSH design tokens, follows the host theme |
 
 ## Install
 
@@ -21,94 +25,86 @@ git clone https://github.com/ShingStars/dsh-bili-models.git
 dsh plugin add file:C:/path/to/dsh-bili-models
 ```
 
-Restart DSH, then open **Settings → 刷B站**.
+Restart DSH afterwards; look for the new UI under "Settings → 刷B站".
 
-## Use
+> ⭐ Don't install alongside the original `dsh-bili-scroll`: both use the same home directory and will interfere. Uninstall the original first when migrating.
 
-The top of the panel is upstream's usual switches (quota, peak/valley, DM, transcription, digest…). At the bottom:
+## Usage
+
+### Model picker ("Model" tab)
 
 | Field | Meaning |
 | --- | --- |
-| **provider** | Providers actually registered in this DSH. Empty = keep the profile default |
-| **model** | Follows the chosen provider |
-| **reasoning effort** | Optional; written into that round when set |
-| **bridge plugins** | Comma-separated package names, defaults to `dsh-our-free-model` |
+| **provider** | Any provider actually registered in the running DSH. Empty = follow the DSH default |
+| **model** | Linked to the provider; lists its models |
+| **reasoning effort** | Optional; written into that round |
+| **bridge plugins** (`bridgePlugins`) | Comma-separated package names, default `dsh-our-free-model` |
 
-The line "这一轮会用：provider / model · effort" shows the effective choice. Hit **保存**.
+After choosing, it shows "this round will use: provider / model · effort".
 
-### With Our Free Model
+**With Our Free Model**: install `dsh-our-free-model` (not bundled here), pick the `our-free-model` provider, and choose a free model. In headless mode the overlay mounts it via a `file://` URL pointing at its `index.js`; if it's absent it's skipped silently.
 
-1. Install `dsh-our-free-model` separately (this plugin neither bundles nor copies it);
-2. Leave **bridge plugins** at `dsh-our-free-model`;
-3. Pick provider `our-free-model` and any free model from the list.
+### In-host runs ("Schedule" tab)
 
-For each round this plugin regenerates the headless overlay, inserting Our Free Model as an entry (via `file://` to its `index.js`) and overriding `agent-default-model`. If the plugin isn't installed it is silently skipped and simply won't appear in the model list.
+With `runMode: in-host` (default), a round drives **one fixed session** inside the DSH host via `ctx.agents`:
 
-## How it works
+- `sessionId` is auto-generated and remembered (in the home `state.json`); clear it to start fresh;
+- each round is a new turn on the same session — continuous context, no child processes;
+- permission preset is selectable (`read-only` / `workspace-write` / `danger-full-access`); unattended approvals are pinned to `never`;
+- `headless` mode (the original way) remains available; `GET /api/bili-duty/overlay` shows the current overlay.
 
-A round is:
+### Multi-recipient DMs / mentions ("Speak" tab)
 
-```
-dsh --profile headless --patch <home>/headless-overlay.yml "<prompt>"
-```
+- `mentionNames` (who to @ in comments) and `dmUids` (who to DM): comma / semicolon / space separated, up to 20 each;
+- single-value legacy fields still work when the list fields are empty;
+- DM body still limited to 500 characters by Bilibili (`code 21007`); one message per recipient.
 
-On top of upstream's entries (MCP server, credentials, authorization…) this plugin appends:
+### Watched uploaders ("Watch" tab)
 
-```yaml
-- insert:
-    - id: bili-bridge-dsh-our-free-model
-      name: 'file:///.../node_modules/dsh-our-free-model/index.js'
-      config: {}
-
-- id: agent-default-model
-  name: "@deepseek-ai/dsh-agent-default-model"
-  config:
-    provider: 'our-free-model'
-    model: 'deepseek-ai/deepseek-v4.1-flash'
-```
-
-`file://` instead of a package name because headless resolves from a different `node_modules` tree; a bare directory URL fails with `ERR_UNSUPPORTED_DIR_IMPORT`, so the entry must point at `index.js`.
-
-`GET /api/bili-duty/overlay` dumps the generated overlay; `GET /api/bili-duty/models` returns providers, models and resolved bridges.
+- `watchUids`: up to 50 UP-master UIDs;
+- `watchNotify`: `off` / `dm` / `comment` / `both`;
+- `watchEveryMin`: check interval in minutes (default 15; the background timer throttles itself);
+- the first sighting of an uploader only records a baseline (no backlog); only **new** videos after that trigger notifications (max 3 per uploader per check, oldest first);
+- the tab shows the watched list (names + last-seen video) and a "check now" button (the `bili_watch_check` tool does the same).
 
 ## Data
 
-Home is `~/.dsh/bili-duty/` (same as upstream, so an existing config carries over):
+Home directory `~/.dsh/bili-duty/` (same as upstream):
 
 ```
 config.json          settings
-duty.md              the brief handed to that round
-seen.md              dedupe table
-out/YYYY-MM-DD.md    daily digest
+state.json           run state (incl. dutySessionId; watch baselines in watch-state.json)
+duty.md              the briefing for each round
+seen.md              dedup table
+out/YYYY-MM-DD.md    daily reports
 duty.log             run log
-.venv/               main dependencies (created by the panel button)
-bili_credential.json cookies after QR login
-headless-overlay.yml rewritten before each round
+.venv/               main dependencies (built by "install deps" in settings)
+bili_credential.json cookies from QR login
+headless-overlay.yml rewritten before each headless round
 ```
 
-## Known limits
+## Known limitations
 
-- **Bilibili account level**: new accounts cannot post public comments (`-107`) and DMs may fail with `21016`. Not a plugin bug; the digest records it truthfully.
-- **A listed provider is not a working account**: check `duty.log` when a round fails.
-- **Bridge resolution** uses the `node_modules` tree this plugin lives in, so bridge plugins must be installed in the same DSH.
-- No self-update: `git pull` and reinstall.
-
-## Changes vs upstream
-
-1. **Per-run model picker**: four config keys (`modelProvider` / `modelName` / `modelEffort` / `bridgePlugins`), `GET /models`, `GET /overlay`, and the panel section.
-2. **Fixed a crash in upstream**: `loadCfg()` referenced two never-declared variables (`hostDiff` / `lastDiffSig`); whenever the "host has this settings row" branch ran it threw `ReferenceError`, so the host half never mounted and the panel stayed on "loading settings". Upstream 0.1.11 has the same bug.
-3. **MCP allow-list**: added `bili_send_message` (when DM is on) and `bili_received_replies` (when reply review is on), which were missing entirely.
-4. **Client stays off the boot critical path**: no `immediately: true` (upstream doesn't set it either).
+- **Account level**: fresh Bilibili accounts cannot post public comments (`-107`) and may fail DMs (`21016`). Not a plugin issue; reports record it honestly.
+- **Models**: a provider appearing in `/api/bili-duty/models` doesn't guarantee its account works; see `duty.log` on failure.
+- **Bridge resolution** (headless mode): bridges resolve against the plugin's own `node_modules` tree — keep bridge plugins in the same DSH install.
+- No self-update; `git pull` and reinstall.
+- **Market toggle**: don't flip this plugin's switch in third-party plugin markets — its enabled state lives in the profile config (`cordis.patch.yml` + `dsh.profile.bundles`), and market toggles fight it (known to mis-disable).
 
 ## Development
 
 ```bash
 node --check bili/index.js
 node --check bili/client.js
-node bili/selfcheck.mjs        # run inside the plugin dir
-node tools/client-smoke.mjs    # fake loader + fake React
+node bili/selfcheck.mjs        # run inside the plugin directory
+node tools/client-smoke.mjs    # fake loader + fake React, exercises the client
 ```
 
-## License and provenance
+## History & credits
 
-MIT. A fork of [c1overzz/dsh-bili-scroll](https://github.com/c1overzz/dsh-bili-scroll) (MIT, © 2026 c1overzz); most of `bili/` is upstream code. The model picker and the crash fix above are this repository's changes. See [NOTICE.md](NOTICE.md).
+- This repository is a fork of [c1overzz/dsh-bili-scroll](https://github.com/c1overzz/dsh-bili-scroll) (MIT, © 2026 c1overzz); most of `bili/` comes from upstream — see [NOTICE.md](NOTICE.md).
+- The v1.x era shipped as `dsh-bili-free-scroll` ("merge both plugins into one package"); it is retired. Its history lives in this repository's git history (tags `v1.0.0` / `v1.0.1`); the old repository has been deleted.
+
+## License
+
+MIT.
